@@ -2,14 +2,20 @@
 
 Define um ambiente de teste completo antes de a aplicação ser importada,
 com chaves geradas na hora (nada de segredo fixo no repositório).
+
+Testes que usam o banco precisam do PostgreSQL descartável:
+    docker compose --profile test up -d db-test
+(ou defina TEST_DATABASE_URL apontando para outro banco de teste).
 """
 
 import base64
 import os
 import secrets
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from sqlalchemy.exc import OperationalError
 
 
 def _b64(data: bytes) -> str:
@@ -32,7 +38,8 @@ _private, _public = _es256_pair()
 TEST_ENV = {
     "APP_ENV": "test",
     "DATABASE_URL": os.environ.get(
-        "TEST_DATABASE_URL", "postgresql+psycopg://saferdocs:saferdocs@localhost:5432/saferdocs_test"
+        "TEST_DATABASE_URL",
+        "postgresql+psycopg://saferdocs:saferdocs_test@127.0.0.1:55433/saferdocs_test",
     ),
     "JWT_PRIVATE_KEY_PEM_B64": _private,
     "JWT_PUBLIC_KEY_PEM_B64": _public,
@@ -45,3 +52,17 @@ TEST_ENV = {
 
 for _name, _value in TEST_ENV.items():
     os.environ[_name] = _value
+
+
+@pytest.fixture(scope="session")
+def database_available() -> None:
+    """Falha com instrução clara se o banco de teste não estiver no ar."""
+    from app.db.session import check_database
+
+    try:
+        check_database()
+    except OperationalError:
+        pytest.fail(
+            "Banco de teste indisponível. Suba com: docker compose --profile test up -d db-test",
+            pytrace=False,
+        )

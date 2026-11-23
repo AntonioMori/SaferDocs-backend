@@ -7,7 +7,7 @@ sem `--force`.
 Uso (dentro de apps/backend):
     uv run python scripts/generate_env.py [--force] [--local]
 
-`--local` aponta o DATABASE_URL para localhost (API rodando fora do Docker).
+`--local` aponta o DATABASE_URL para 127.0.0.1 (API rodando fora do Docker).
 """
 
 import argparse
@@ -44,7 +44,7 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--force", action="store_true", help="sobrescreve o .env existente")
-    parser.add_argument("--local", action="store_true", help="DATABASE_URL com host localhost")
+    parser.add_argument("--local", action="store_true", help="DATABASE_URL com host 127.0.0.1")
     args = parser.parse_args()
 
     if TARGET.exists() and not args.force:
@@ -52,7 +52,7 @@ def main() -> None:
 
     db_password = secrets.token_urlsafe(24)
     private, public = es256_pair()
-    host = "localhost" if args.local else "db"
+    host = "127.0.0.1" if args.local else "db"
     values = {
         "POSTGRES_PASSWORD": db_password,
         "DATABASE_URL": f"postgresql+psycopg://saferdocs:{db_password}@{host}:5432/saferdocs",
