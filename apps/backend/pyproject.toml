@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.165.0",
     "psycopg[binary]>=3.3.9",
     "pydantic-settings>=2.16.3",
+    "pyjwt[crypto]>=2.15.1",
     "sqlalchemy>=2.1.9",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -27,6 +28,16 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S"]
 ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+# S105/S106 (senha hardcoded) disparam em nomes de enum como PASSWORD_CHANGED ou
+# TOKEN_ISSUED e em fixtures de teste. Segredos reais só vêm do .env (RNF-05).
+"app/services/audit_service.py" = ["S105"]
+"app/services/security_events.py" = ["S105"]
+"app/services/token_service.py" = ["S105"]
+"app/crypto/aead.py" = ["S105"]
+"scripts/dev_token.py" = ["S105"]
+"tests/**" = ["S105", "S106"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "tests"]
