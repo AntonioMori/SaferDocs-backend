@@ -1,11 +1,13 @@
-# --- Variáveis de Ambiente e Segredos ---
+# --- Variáveis de Ambiente e Segredos (RNF-07) ---
+# Qualquer arquivo .env fica fora do git; só o modelo documentado é versionado.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 *.pem
 *.key
+keys/
 
-# --- Python / Data Science ---
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
