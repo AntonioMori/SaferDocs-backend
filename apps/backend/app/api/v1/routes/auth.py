@@ -1,10 +1,10 @@
-"""Rotas de autenticação: cadastro e login."""
+"""Rotas de autenticação: cadastro, login e logout."""
 
 from fastapi import APIRouter, Request, Response, status
 
-from app.api.deps import DbSession
+from app.api.deps import CurrentAuth, DbSession
 from app.schemas.auth import LoginIn, RegisterIn, TokenOut, UserOut
-from app.services import auth_service
+from app.services import auth_service, session_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -19,3 +19,11 @@ def register(data: RegisterIn, request: Request, db: DbSession) -> UserOut:
 def login(data: LoginIn, request: Request, response: Response, db: DbSession) -> TokenOut:
     """Login com e-mail e senha. Qualquer falha devolve a mesma mensagem (REQ-04)."""
     return auth_service.login(db, data, request, response)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(context: CurrentAuth, request: Request, response: Response, db: DbSession) -> Response:
+    """Encerra a sessão atual: o access token vai para a denylist (REQ-21)."""
+    session_service.logout(db, context, request, response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
