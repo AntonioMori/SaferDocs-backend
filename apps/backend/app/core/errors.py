@@ -161,12 +161,63 @@ async def _http_error_handler(request: Request, exc: Exception) -> JSONResponse:
     return error_response(request, ErrorCode.VALIDATION)
 
 
+_REASONS: dict[str, str] = {
+    "missing": "campo obrigatório",
+    "json_invalid": "JSON inválido",
+    "json_type": "o corpo precisa ser um objeto JSON",
+    "model_attributes_type": "o corpo precisa ser um objeto JSON",
+    "string_type": "deve ser um texto",
+    "int_type": "deve ser um número inteiro",
+    "int_parsing": "deve ser um número inteiro",
+    "int_from_float": "deve ser um número inteiro",
+    "float_type": "deve ser um número",
+    "float_parsing": "deve ser um número",
+    "bool_type": "deve ser verdadeiro ou falso",
+    "bool_parsing": "deve ser verdadeiro ou falso",
+    "uuid_type": "identificador inválido",
+    "uuid_parsing": "identificador inválido",
+    "list_type": "deve ser uma lista",
+    "literal_error": "valor não permitido",
+    "enum": "valor não permitido",
+    "extra_forbidden": "campo não permitido",
+    "too_short": "quantidade de itens abaixo do mínimo",
+    "too_long": "quantidade de itens acima do máximo",
+    "string_pattern_mismatch": "formato inválido",
+}
+
+
+def _reason(err: dict[str, Any]) -> str:
+    """Motivo legível da falha, sem repetir o valor enviado (RNF-14)."""
+    kind = err["type"]
+    ctx = err.get("ctx") or {}
+    if kind == "string_too_short":
+        return f"mínimo de {ctx.get('min_length')} caracteres"
+    if kind == "string_too_long":
+        return f"máximo de {ctx.get('max_length')} caracteres"
+    if kind in ("greater_than", "greater_than_equal", "less_than", "less_than_equal"):
+        simbolos = {
+            "greater_than": ">",
+            "greater_than_equal": ">=",
+            "less_than": "<",
+            "less_than_equal": "<=",
+        }
+        limite = next(iter(ctx.values()), "")
+        return f"deve ser {simbolos[kind]} {limite}"
+    if kind in ("value_error", "assertion_error"):
+        # Mensagens dos nossos próprios validadores, escritas para o usuário.
+        return str(ctx.get("error") or err.get("msg", "")).removeprefix("Value error, ") or "valor inválido"
+    return _REASONS.get(kind, "valor inválido")
+
+
+def _field_name(loc: tuple[Any, ...]) -> str:
+    # loc vem como ("body", "campo", ...) ou ("query", "nome"); a origem não interessa ao cliente.
+    partes = [str(p) for p in loc[1:]] if len(loc) > 1 else [str(p) for p in loc]
+    return ".".join(partes)
+
+
 async def _validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
-    fields = [
-        FieldError(".".join(str(p) for p in err["loc"][1:]) or str(err["loc"][0]), "valor inválido")
-        for err in exc.errors()
-    ]
+    fields = [FieldError(_field_name(tuple(err["loc"])), _reason(err)) for err in exc.errors()]
     return error_response(request, ErrorCode.VALIDATION, fields=fields)
 
 
