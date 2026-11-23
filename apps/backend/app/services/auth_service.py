@@ -1,5 +1,7 @@
 """Regras de cadastro e login."""
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi import Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -54,6 +56,23 @@ def _invalid_credentials(db: Session, request: Request, user: User | None, reaso
     return AppError(ErrorCode.AUTH_INVALID_CREDENTIALS)
 
 
+def _register_failure(db: Session, request: Request, user: User, now: datetime) -> None:
+    """REQ-03: após N falhas consecutivas, bloqueia a conta por M minutos."""
+    settings = get_settings()
+    user.failed_login_count += 1
+    if user.failed_login_count >= settings.login_max_attempts:
+        user.locked_until = now + timedelta(minutes=settings.login_lock_minutes)
+        user.failed_login_count = 0  # ao fim do bloqueio, o usuário volta a ter N tentativas
+        audit.record(
+            db,
+            action=audit.AuditAction.ACCOUNT_LOCKED,
+            result=audit.AuditResult.SUCCESS,
+            request=request,
+            user_id=user.id,
+            details={"minutes": settings.login_lock_minutes},
+        )
+
+
 def login(db: Session, data: LoginIn, request: Request, response: Response) -> TokenOut:
     """Login com e-mail e senha (Figura 3)."""
     settings = get_settings()
@@ -63,15 +82,25 @@ def login(db: Session, data: LoginIn, request: Request, response: Response) -> T
     check_rate_limit("login-ip", client_ip(request) or "desconhecido", settings.rate_limit_login_per_ip)
     check_rate_limit("login-account", email, settings.rate_limit_login_per_account)
 
-    user = find_user_by_email(db, email)
+    # FOR UPDATE: tentativas simultâneas não perdem incrementos do contador de falhas.
+    user = db.scalar(select(User).where(func.lower(User.email) == email).with_for_update())
     if user is None:
         # Gasta o mesmo tempo de uma verificação real para não revelar que a conta não existe.
         verify_password(dummy_hash(), data.password)
         raise _invalid_credentials(db, request, None, "unknown_user")
 
+    now = datetime.now(UTC)
+    if user.locked_until is not None and user.locked_until > now:
+        # REQ-03: bloqueada. Mesma resposta e mesmo custo de uma senha errada.
+        verify_password(dummy_hash(), data.password)
+        raise _invalid_credentials(db, request, user, "account_locked")
+
     if not verify_password(user.password_hash, data.password):
+        _register_failure(db, request, user, now)
         raise _invalid_credentials(db, request, user, "wrong_password")
 
+    user.failed_login_count = 0
+    user.locked_until = None
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(data.password)
 
