@@ -67,6 +67,18 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
+## Banco de dados e migrações
+
+O schema é criado e alterado **somente** por migrations do Alembic (`alembic/versions/`). Nunca crie ou altere tabelas direto no banco.
+
+```bash
+cd apps/backend
+uv run alembic upgrade head                            # aplica as migrations pendentes
+uv run alembic revision --autogenerate -m "descrição"  # gera uma migration a partir dos models
+uv run alembic downgrade -1                            # desfaz a última
+```
+No `docker compose up`, o container da API roda `alembic upgrade head` antes de subir.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
