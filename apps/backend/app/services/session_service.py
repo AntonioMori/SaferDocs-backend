@@ -13,6 +13,7 @@ from app.core.errors import AppError, ErrorCode, FieldError
 from app.crypto.passwords import hash_password, verify_password
 from app.db.models import JwtDenylist, RefreshToken, UserSession
 from app.schemas.auth import ChangePasswordIn, TokenOut, UserOut
+from app.schemas.sessions import SessionOut
 from app.services import audit_service as audit
 from app.services import security_events
 from app.services.security_events import SecurityEventType
@@ -143,6 +144,67 @@ def refresh(db: Session, request: Request, response: Response) -> TokenOut:
         expires_in=tokens.expires_in,
         user=UserOut.model_validate(user),
     )
+
+
+def list_active_sessions(db: Session, context: AuthContext) -> list[SessionOut]:
+    """REQ-57: sessões não revogadas do usuário, a mais recente primeiro."""
+    sessoes = db.scalars(
+        select(UserSession)
+        .where(UserSession.user_id == context.user.id, UserSession.revoked_at.is_(None))
+        .order_by(UserSession.last_seen_at.desc())
+    ).all()
+    return [
+        SessionOut(
+            id=s.id,
+            user_agent=s.user_agent,
+            ip=str(s.ip) if s.ip else None,
+            created_at=s.created_at,
+            last_seen_at=s.last_seen_at,
+            current=s.id == context.session.id,
+        )
+        for s in sessoes
+    ]
+
+
+def _end_current(db: Session, context: AuthContext, response: Response) -> None:
+    deny_access_token(db, context.claims)
+    clear_refresh_cookie(response)
+
+
+def revoke_one_session(
+    db: Session, context: AuthContext, session_id: uuid.UUID, request: Request, response: Response
+) -> None:
+    """REQ-57: encerra uma sessão do próprio usuário (sessão alheia = não encontrada)."""
+    alvo = db.get(UserSession, session_id)
+    if alvo is None or alvo.user_id != context.user.id or alvo.revoked_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND)
+    revoke_sessions(db, [alvo.id], reason="revoked_by_user")
+    if alvo.id == context.session.id:
+        _end_current(db, context, response)
+    audit.record(
+        db,
+        action=audit.AuditAction.SESSION_REVOKED,
+        result=audit.AuditResult.SUCCESS,
+        request=request,
+        user_id=context.user.id,
+        details={"session_id": str(alvo.id)},
+    )
+    db.commit()
+
+
+def revoke_every_session(db: Session, context: AuthContext, request: Request, response: Response) -> None:
+    """REQ-57: "sair de todos os dispositivos", inclusive deste."""
+    derrubadas = revoke_all_sessions(db, context.user.id, reason="logout_all")
+    _end_current(db, context, response)
+    audit.record(
+        db,
+        action=audit.AuditAction.SESSION_REVOKED,
+        result=audit.AuditResult.SUCCESS,
+        request=request,
+        user_id=context.user.id,
+        details={"revoked_sessions": len(derrubadas), "all": True},
+    )
+    db.commit()
 
 
 def logout(db: Session, context: AuthContext, request: Request, response: Response) -> None:
