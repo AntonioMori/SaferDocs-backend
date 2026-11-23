@@ -67,6 +67,18 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
+## Versionamento da API
+
+Todos os endpoints ficam sob **`/api/v1/`** (RNF-16). A versão só muda quando o contrato quebra para quem já usa a API (RNF-17).
+
+| Mudança | Versão |
+|---|---|
+| Novo endpoint, novo campo **opcional** na entrada, novo campo na resposta, novo código de erro | Continua `v1` |
+| Correção de bug que não altera o contrato | Continua `v1` |
+| Remover ou renomear endpoint ou campo, tornar obrigatório um campo que era opcional, mudar o tipo ou o significado de um campo, mudar o formato do erro ou da autenticação | **Nova versão (`v2`)** |
+
+Como uma nova versão entra: ela ganha o próprio pacote `app/api/v2/`, com um router de prefixo `/api/v2`, registrado em `app/main.py` ao lado do `v1`. As duas versões convivem até o frontend migrar; só então a `v1` é removida. Os serviços (`app/services/`) são compartilhados: o que muda entre versões é só a camada de rotas e schemas.
+
 ## Erros da API
 
 Todo erro retorna o mesmo objeto JSON:
