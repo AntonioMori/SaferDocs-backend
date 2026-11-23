@@ -1,4 +1,4 @@
-"""Logout, troca de senha e revogação de sessões e tokens (REQ-21, 23 e 25)."""
+"""Refresh, logout, troca de senha e revogação de sessões e tokens (REQ-21, 23, 25 e 29)."""
 
 import uuid
 from datetime import UTC, datetime
@@ -16,7 +16,7 @@ from app.schemas.auth import ChangePasswordIn, TokenOut, UserOut
 from app.services import audit_service as audit
 from app.services import security_events
 from app.services.security_events import SecurityEventType
-from app.services.token_service import clear_refresh_cookie, issue_tokens
+from app.services.token_service import clear_refresh_cookie, issue_tokens, rotate_refresh_token
 
 
 def deny_access_token(db: Session, claims: dict) -> None:
@@ -82,6 +82,20 @@ def change_password(
     )
     security_events.emit(db, user_id=user.id, type=SecurityEventType.PASSWORD_CHANGED, request=request)
     tokens = issue_tokens(db, user, request, response)
+    db.commit()
+    return TokenOut(
+        access_token=tokens.access_token,
+        token_type=tokens.token_type,
+        expires_in=tokens.expires_in,
+        user=UserOut.model_validate(user),
+    )
+
+
+def refresh(db: Session, request: Request, response: Response) -> TokenOut:
+    """Rotação do refresh token (REQ-29): emite um par novo na mesma sessão."""
+    user, tokens = rotate_refresh_token(db, request, response)
+    for action in (audit.AuditAction.TOKEN_REFRESHED, audit.AuditAction.TOKEN_ISSUED):
+        audit.record(db, action=action, result=audit.AuditResult.SUCCESS, request=request, user_id=user.id)
     db.commit()
     return TokenOut(
         access_token=tokens.access_token,
