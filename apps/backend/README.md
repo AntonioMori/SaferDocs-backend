@@ -79,7 +79,8 @@ uv run alembic downgrade -1                            # desfaz a última
 ```
 No `docker compose up`, o container da API roda `alembic upgrade head` antes de subir.
 
-Regras (verificadas pelos testes em `tests/test_migration_rules.py`):
+Regras (verificadas pelos testes em `tests/test_migration_rules.py` e `tests/test_schema_sync.py`):
+- **Nada de alteração manual:** o teste `test_schema_sync.py` aplica as migrations num banco limpo e compara com os models, como o `alembic check`. Model alterado sem migration, ou tabela criada à mão, faz o teste falhar.
 - **Identificação:** o nome de cada arquivo começa com data e hora em UTC (`AAAAMMDD_HHMM_<revisão>_<descrição>.py`), gerado automaticamente pelo `alembic revision`.
 - **Upgrade e downgrade:** toda migration implementa as duas funções; `downgrade()` desfaz exatamente o que `upgrade()` fez.
 - **Trabalho em paralelo:** o histórico precisa ter uma única cabeça. Se duas pessoas criarem migrations ao mesmo tempo, antes do merge rode `uv run alembic heads` e, havendo duas, `uv run alembic merge heads -m "merge"`.
