@@ -22,6 +22,7 @@ from app.main import create_app
 from app.middlewares import rate_limit
 from app.pdf import client as pdf_client
 from app.services import audit_service, security_events, token_service, user_keys
+from tests.conftest import session_token
 
 TABELAS = {
     "users",
@@ -105,7 +106,7 @@ def usuario(migrated_db):
 
 
 def test_rota_protegida_aceita_token_valido(client, usuario):
-    token, _ = encode_access_token(usuario.id)
+    token = session_token(usuario.id)
     resposta = client.get("/api/v1/_teste/eu", headers={"Authorization": f"Bearer {token}"})
     assert resposta.status_code == 200
     assert resposta.json() == {"email": usuario.email}
