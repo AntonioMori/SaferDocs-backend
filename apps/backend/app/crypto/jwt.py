@@ -1,7 +1,7 @@
 """Emissão e validação do access token JWT (ES256).
 
-INFRA-02: versão inicial. O REQ-17/18/24..28 (dono: AntonioMori) completa os
-claims (ip, ua_hash, session_id) e as verificações da Figura 4.
+Claims: iss, sub, iat, exp (REQ-18), jti (REQ-24) e session_id (REQ-28).
+As verificações além da assinatura ficam em app/api/deps.py (Figura 4).
 """
 
 import base64
@@ -47,5 +47,5 @@ def decode_access_token(token: str) -> dict[str, Any]:
         _keys()[1],
         algorithms=[ALGORITHM],
         issuer=get_settings().jwt_issuer,
-        options={"require": ["exp", "iat", "sub", "jti", "iss"]},
+        options={"require": ["exp", "iat", "sub", "jti", "iss", "session_id"]},
     )

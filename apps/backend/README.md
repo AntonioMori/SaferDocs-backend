@@ -57,9 +57,10 @@ Os módulos se comunicam por estas funções. Algumas começaram como *stub* (as
 
 Para chamar rotas protegidas em desenvolvimento antes do login real existir:
 ```bash
-uv run python scripts/dev_token.py --email dev@saferdocs.local
-curl -H "Authorization: Bearer <token>" http://127.0.0.1:8000/api/v1/...
+TOKEN=$(uv run python scripts/dev_token.py --user-agent dev)
+curl -A dev -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/api/v1/...
 ```
+O token só vale com o mesmo User-Agent da sessão (REQ-27), por isso o `-A dev`.
 
 ## Como executar
 
