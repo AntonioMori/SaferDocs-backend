@@ -19,7 +19,7 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-SESSAO = {"session_id": str(uuid.uuid4()), "ua_hash": "0" * 64}
+SESSAO = {"session_id": str(uuid.uuid4()), "ua_hash": "0" * 64, "ip": "0" * 64}
 
 
 def _claims_validos() -> dict:

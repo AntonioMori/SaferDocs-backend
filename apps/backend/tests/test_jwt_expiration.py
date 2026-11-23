@@ -28,6 +28,7 @@ def _token_emitido_em(momento: datetime, subject: uuid.UUID, session_id: uuid.UU
         "jti": str(uuid.uuid4()),
         "session_id": str(session_id or uuid.uuid4()),
         "ua_hash": keyed_hash("testclient"),
+        "ip": keyed_hash("testclient"),
     }
     return jwt.encode(claims, base64.b64decode(TEST_ENV["JWT_PRIVATE_KEY_PEM_B64"]), algorithm=ALGORITHM)
 
