@@ -1,15 +1,19 @@
 """Emissão de tokens ao final de qualquer login.
 
 `issue_tokens` é chamada pelo login com senha, pelo passo do TOTP e pelo
-login com passkey. Ela cria uma sessão (REQ-28) e emite o access token com
-o claim `session_id`. Não faz commit: quem chama controla a transação.
+login com passkey. Ela cria uma sessão (REQ-28), emite o access token com o
+claim `session_id` e um refresh token opaco (REQ-19). Não faz commit: quem
+chama controla a transação.
 
-Ainda falta (próximas issues, mesma assinatura): refresh token opaco e
-cookie HttpOnly (REQ-19/20).
+Ainda falta (próxima issue, mesma assinatura): entregar o refresh token só
+no cookie HttpOnly (REQ-20).
 """
 
+import hashlib
 import ipaddress
-from dataclasses import dataclass
+import secrets
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Request, Response
 from sqlalchemy.orm import Session
@@ -18,7 +22,9 @@ from app.core.config import get_settings
 from app.core.request_info import client_ip, user_agent
 from app.crypto.jwt import encode_access_token
 from app.crypto.keyed_hash import keyed_hash
-from app.db.models import User, UserSession
+from app.db.models import RefreshToken, User, UserSession
+
+REFRESH_TOKEN_BYTES = 32  # 256 bits (REQ-19)
 
 
 @dataclass(frozen=True)
@@ -26,6 +32,13 @@ class IssuedTokens:
     access_token: str
     expires_in: int
     token_type: str = "Bearer"
+    # Nunca vai no corpo da resposta: só no cookie HttpOnly (REQ-20).
+    refresh_token: str = field(default="", repr=False)
+
+
+def hash_refresh_token(token: str) -> str:
+    """SHA-256 do refresh token. Basta um hash rápido: o valor tem 256 bits aleatórios."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def create_session(db: Session, user: User, request: Request) -> UserSession:
@@ -49,6 +62,20 @@ def access_token_for(user: User, session: UserSession) -> str:
     return token
 
 
+def create_refresh_token(db: Session, session: UserSession) -> str:
+    """Sorteia um refresh token opaco (CSPRNG) e guarda apenas o hash, com validade de 7 dias."""
+    token = secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
+    db.add(
+        RefreshToken(
+            session_id=session.id,
+            token_sha256=hash_refresh_token(token),
+            expires_at=datetime.now(UTC) + timedelta(seconds=get_settings().refresh_token_ttl_seconds),
+        )
+    )
+    db.flush()
+    return token
+
+
 def issue_tokens(db: Session, user: User, request: Request, response: Response) -> IssuedTokens:
     """Cria a sessão e emite o par de tokens do usuário."""
     del response  # recebe o cookie do refresh token (REQ-20)
@@ -56,6 +83,7 @@ def issue_tokens(db: Session, user: User, request: Request, response: Response) 
     return IssuedTokens(
         access_token=access_token_for(user, session),
         expires_in=get_settings().access_token_ttl_seconds,
+        refresh_token=create_refresh_token(db, session),
     )
 
 
