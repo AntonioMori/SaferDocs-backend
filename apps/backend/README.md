@@ -67,6 +67,45 @@ uv sync
 uv run uvicorn app.main:app --reload
 ```
 
+## Erros da API
+
+Todo erro retorna o mesmo objeto JSON:
+```json
+{
+  "code": "VAL_001",
+  "message": "Dados inválidos.",
+  "timestamp": "2026-11-23T14:00:00Z",
+  "request_id": "6f1c…",
+  "fields": [{ "field": "password", "reason": "mínimo de 12 caracteres" }]
+}
+```
+`fields` só aparece em erros de validação. A resposta nunca traz stack trace, SQL ou o valor enviado. Os códigos seguem o padrão `DOMÍNIO_NNN` e vêm de um catálogo único (`app/core/errors.py`).
+
+Uso dos status HTTP: **400** erro do cliente, **401** não autenticado, **403** autenticado mas sem permissão, **404** não encontrado, **405** método não permitido, **413** arquivo grande demais, **429** limite de requisições, **500** erro interno.
+
+<!-- tabela-de-erros:inicio -->
+| Código | Status | Mensagem |
+|---|---|---|
+| `AUTH_001` | 401 | E-mail ou senha inválidos. |
+| `AUTH_002` | 401 | Código de verificação inválido. |
+| `AUTH_003` | 401 | Autenticação necessária. |
+| `AUTH_004` | 401 | Sessão encerrada. Faça login novamente. |
+| `AUTH_005` | 401 | Sessão expirada. Faça login novamente. |
+| `AUTH_006` | 400 | Não foi possível validar a passkey. |
+| `AUTH_009` | 403 | Origem da requisição não permitida. |
+| `AUTH_010` | 403 | Você não tem permissão para acessar este recurso. |
+| `DOC_001` | 400 | O arquivo enviado não é um PDF. |
+| `DOC_002` | 413 | O arquivo excede o tamanho máximo permitido. |
+| `DOC_003` | 400 | PDFs com JavaScript embutido não são aceitos. |
+| `DOC_004` | 400 | Não foi possível processar o PDF. |
+| `DOC_005` | 400 | Página ou posição do selo inválida. |
+| `VAL_001` | 400 | Dados inválidos. |
+| `RES_001` | 404 | Recurso não encontrado. |
+| `RES_002` | 405 | Método não permitido para este recurso. |
+| `RATE_001` | 429 | Muitas requisições. Aguarde e tente novamente. |
+| `SYS_001` | 500 | Erro interno. Tente novamente mais tarde. |
+<!-- tabela-de-erros:fim -->
+
 ## Banco de dados e migrações
 
 O schema é criado e alterado **somente** por migrations do Alembic (`alembic/versions/`). Nunca crie ou altere tabelas direto no banco.
