@@ -21,6 +21,12 @@ def login(data: LoginIn, request: Request, response: Response, db: DbSession) ->
     return auth_service.login(db, data, request, response)
 
 
+@router.post("/refresh", response_model=TokenOut)
+def refresh(request: Request, response: Response, db: DbSession) -> TokenOut:
+    """Troca o refresh token do cookie por um par novo; o anterior deixa de valer (REQ-29)."""
+    return session_service.refresh(db, request, response)
+
+
 @router.put("/password", response_model=TokenOut)
 def change_password(
     data: ChangePasswordIn, context: CurrentAuth, request: Request, response: Response, db: DbSession
