@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   # ---------------------------------------------------------------------------
-  # 🗄️ Banco de Dados (Padrão sugerido: PostgreSQL)
+  # Banco de dados PostgreSQL
   # ---------------------------------------------------------------------------
   db:
     image: postgres:15-alpine
@@ -17,21 +15,18 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
   # ---------------------------------------------------------------------------
-  # ⚙️ Backend API
-  # ⚠️ Requer um arquivo 'Dockerfile' dentro de apps/backend/
+  # API (FastAPI)
   # ---------------------------------------------------------------------------
   backend:
     build:
       context: ./apps/backend
-      dockerfile: Dockerfile
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     ports:
       - "8000:8000"
     depends_on:
       - db
-    environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/mydatabase
     volumes:
-      - ./apps/backend:/app  # Hot-reload para desenvolvimento
+      - ./apps/backend/app:/app/app # hot-reload em desenvolvimento
 
 volumes:
   postgres_data:
