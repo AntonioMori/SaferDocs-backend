@@ -1,15 +1,46 @@
-"""Configuração da aplicação (RNF-05).
+"""Configuração da aplicação (RNF-05 e RNF-08).
 
 Tudo o que é sensível ou depende do ambiente vem de variáveis de ambiente
 ou do arquivo `.env`. Nada disso é escrito no código. A lista completa e
 documentada está em `.env.example`.
+
+Na inicialização todas as variáveis são validadas (RNF-08). Se alguma
+obrigatória faltar ou for inválida, a aplicação não sobe e mostra quais
+variáveis estão erradas, sem nunca imprimir o valor delas.
 """
 
+import base64
+import binascii
+import re
 from functools import lru_cache
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from pydantic import Field, SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+RATE_LIMIT_PATTERN = re.compile(r"^\d+/(second|minute|hour)$")
+
+
+class ConfigError(RuntimeError):
+    """Configuração ausente ou inválida. A mensagem nunca contém valores."""
+
+
+def _decode_b64(value: str, name: str) -> bytes:
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError(f"{name} precisa estar em base64") from None
+
+
+def _check_origin(origin: str) -> None:
+    if origin == "*":
+        raise ValueError("'*' não é permitido; liste as origens explicitamente")
+    parts = urlsplit(origin)
+    if parts.scheme not in ("http", "https") or not parts.netloc or parts.path not in ("", "/"):
+        raise ValueError(f"origem inválida: {origin!r} (use esquema://host[:porta])")
 
 
 class Settings(BaseSettings):
@@ -24,7 +55,7 @@ class Settings(BaseSettings):
     # --- JWT (REQ-17/18): par ES256 em PEM, codificado em base64 numa linha
     jwt_private_key_pem_b64: SecretStr
     jwt_public_key_pem_b64: str
-    jwt_issuer: str = "saferdocs"
+    jwt_issuer: str = Field(default="saferdocs", min_length=1)
     access_token_ttl_seconds: int = Field(default=900, gt=0)
     refresh_token_ttl_seconds: int = Field(default=604800, gt=0)
 
@@ -38,7 +69,7 @@ class Settings(BaseSettings):
 
     # --- WebAuthn (REQ-09)
     webauthn_rp_id: str
-    webauthn_rp_name: str = "SaferDocs"
+    webauthn_rp_name: str = Field(default="SaferDocs", min_length=1)
     webauthn_origin: str
 
     # --- Login (REQ-03/05)
@@ -49,12 +80,14 @@ class Settings(BaseSettings):
     rate_limit_verify_per_ip: str = "10/minute"
 
     # --- PDF (REQ-61/62)
-    max_upload_mb: int = Field(default=20, gt=0)
-    pdf_worker_socket: str = "/run/pdf/worker.sock"
+    max_upload_mb: int = Field(default=20, gt=0, le=100)
+    pdf_worker_socket: str = Field(default="/run/pdf/worker.sock", min_length=1)
     pdf_worker_timeout_seconds: int = Field(default=30, gt=0)
 
     # --- Cookies (REQ-20)
     cookie_secure: bool = True
+
+    # ------------------------------------------------------------------ validação
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod
@@ -63,12 +96,101 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
 
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def _validate_origins(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("informe ao menos uma origem")
+        for origin in value:
+            _check_origin(origin)
+        return [origin.rstrip("/") for origin in value]
+
+    @field_validator("database_url")
+    @classmethod
+    def _validate_database_url(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().startswith(("postgresql://", "postgresql+psycopg://")):
+            raise ValueError("precisa ser uma URL do PostgreSQL (postgresql+psycopg://...)")
+        return value
+
+    @field_validator("master_key", "hash_pepper")
+    @classmethod
+    def _validate_32_bytes(cls, value: SecretStr) -> SecretStr:
+        if len(_decode_b64(value.get_secret_value(), "o valor")) != 32:
+            raise ValueError("precisa ser base64 de exatamente 32 bytes")
+        return value
+
+    @field_validator("rate_limit_login_per_ip", "rate_limit_login_per_account", "rate_limit_verify_per_ip")
+    @classmethod
+    def _validate_rate_limit(cls, value: str) -> str:
+        if not RATE_LIMIT_PATTERN.match(value):
+            raise ValueError("formato esperado: <quantidade>/<second|minute|hour>")
+        return value
+
+    @field_validator("webauthn_rp_id")
+    @classmethod
+    def _validate_rp_id(cls, value: str) -> str:
+        if "://" in value or "/" in value or ":" in value or not value:
+            raise ValueError("rpId é só o domínio, sem esquema, porta ou caminho")
+        return value
+
+    @field_validator("webauthn_origin")
+    @classmethod
+    def _validate_webauthn_origin(cls, value: str) -> str:
+        _check_origin(value)
+        return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _validate_cross_fields(self) -> "Settings":
+        self._validate_jwt_keys()
+        host = urlsplit(self.webauthn_origin).hostname or ""
+        if host != self.webauthn_rp_id and not host.endswith("." + self.webauthn_rp_id):
+            raise ValueError("WEBAUTHN_ORIGIN precisa pertencer ao domínio de WEBAUTHN_RP_ID")
+        if self.is_production:
+            if not self.cookie_secure:
+                raise ValueError("COOKIE_SECURE precisa ser true em produção")
+            inseguras = [o for o in self.cors_allowed_origins if not o.startswith("https://")]
+            if inseguras or not self.webauthn_origin.startswith("https://"):
+                raise ValueError("em produção as origens precisam usar https")
+        return self
+
+    def _validate_jwt_keys(self) -> None:
+        try:
+            private = serialization.load_pem_private_key(
+                _decode_b64(self.jwt_private_key_pem_b64.get_secret_value(), "a chave"), password=None
+            )
+            public = serialization.load_pem_public_key(_decode_b64(self.jwt_public_key_pem_b64, "a chave"))
+        except ValueError:
+            raise ValueError(
+                "JWT_PRIVATE_KEY_PEM_B64/JWT_PUBLIC_KEY_PEM_B64 precisam ser PEM válidos em base64"
+            ) from None
+        if not isinstance(private, ec.EllipticCurvePrivateKey) or not isinstance(private.curve, ec.SECP256R1):
+            raise ValueError("a chave do JWT precisa ser ECDSA P-256 (ES256)")
+        if private.public_key().public_numbers() != getattr(public, "public_numbers", lambda: None)():
+            raise ValueError("JWT_PUBLIC_KEY_PEM_B64 não corresponde à chave privada")
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
 
 
+def _format_errors(error: ValidationError) -> str:
+    linhas = []
+    for item in error.errors(include_input=False, include_url=False, include_context=False):
+        campo = ".".join(str(p) for p in item["loc"]).upper() or "configuração"
+        mensagem = "variável obrigatória ausente" if item["type"] == "missing" else item["msg"]
+        linhas.append(f"  - {campo}: {mensagem.removeprefix('Value error, ')}")
+    return "Configuração inválida; a API não vai subir:\n" + "\n".join(linhas)
+
+
+def load_settings() -> Settings:
+    """Lê e valida o ambiente. Lança ConfigError sem expor nenhum valor."""
+    try:
+        return Settings()  # type: ignore[call-arg]
+    except ValidationError as error:
+        raise ConfigError(_format_errors(error)) from None
+
+
 @lru_cache
 def get_settings() -> Settings:
-    """Settings carregadas uma única vez por processo."""
-    return Settings()  # type: ignore[call-arg]
+    """Settings carregadas e validadas uma única vez por processo."""
+    return load_settings()
