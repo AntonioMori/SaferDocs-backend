@@ -24,10 +24,47 @@ logger = logging.getLogger("saferdocs.errors")
 
 
 class ErrorCode(StrEnum):
+    """Catálogo único de códigos (RNF-13): <DOMÍNIO>_<NNN>.
+
+    Nenhum código de erro é escrito fora daqui. Domínios:
+    AUTH (autenticação e sessão), DOC (documentos PDF), VAL (validação de
+    entrada), RES (recursos e rotas), RATE (limite de requisições) e SYS
+    (erros internos).
+    """
+
+    # --- AUTH: autenticação e sessão
+    AUTH_INVALID_CREDENTIALS = "AUTH_001"
+    AUTH_INVALID_MFA = "AUTH_002"
+    AUTH_TOKEN_INVALID = "AUTH_003"  # noqa: S105 (código de erro, não é senha)
+    AUTH_TOKEN_REVOKED = "AUTH_004"  # noqa: S105 (código de erro, não é senha)
+    AUTH_REFRESH_INVALID = "AUTH_005"
+    AUTH_PASSKEY_FAILED = "AUTH_006"
+    AUTH_ORIGIN_NOT_ALLOWED = "AUTH_009"
+    AUTH_FORBIDDEN = "AUTH_010"
+
+    # --- DOC: documentos PDF
+    DOC_NOT_PDF = "DOC_001"
+    DOC_TOO_LARGE = "DOC_002"
+    DOC_HAS_JAVASCRIPT = "DOC_003"
+    DOC_UNPROCESSABLE = "DOC_004"
+    DOC_INVALID_POSITION = "DOC_005"
+
+    # --- VAL: validação de entrada
     VALIDATION = "VAL_001"
+
+    # --- RES: recursos e rotas
     NOT_FOUND = "RES_001"
     METHOD_NOT_ALLOWED = "RES_002"
+
+    # --- RATE: limite de requisições
+    RATE_LIMITED = "RATE_001"
+
+    # --- SYS: erros internos
     INTERNAL = "SYS_001"
+
+    @property
+    def domain(self) -> str:
+        return self.value.split("_")[0]
 
 
 @dataclass(frozen=True)
@@ -37,9 +74,24 @@ class ErrorSpec:
 
 
 CATALOG: dict[ErrorCode, ErrorSpec] = {
+    # AUTH_001 é a mensagem única do REQ-04: não diz se o erro foi no e-mail ou na senha.
+    ErrorCode.AUTH_INVALID_CREDENTIALS: ErrorSpec(401, "E-mail ou senha inválidos."),
+    ErrorCode.AUTH_INVALID_MFA: ErrorSpec(401, "Código de verificação inválido."),
+    ErrorCode.AUTH_TOKEN_INVALID: ErrorSpec(401, "Autenticação necessária."),
+    ErrorCode.AUTH_TOKEN_REVOKED: ErrorSpec(401, "Sessão encerrada. Faça login novamente."),
+    ErrorCode.AUTH_REFRESH_INVALID: ErrorSpec(401, "Sessão expirada. Faça login novamente."),
+    ErrorCode.AUTH_PASSKEY_FAILED: ErrorSpec(400, "Não foi possível validar a passkey."),
+    ErrorCode.AUTH_ORIGIN_NOT_ALLOWED: ErrorSpec(403, "Origem da requisição não permitida."),
+    ErrorCode.AUTH_FORBIDDEN: ErrorSpec(403, "Você não tem permissão para acessar este recurso."),
+    ErrorCode.DOC_NOT_PDF: ErrorSpec(400, "O arquivo enviado não é um PDF."),
+    ErrorCode.DOC_TOO_LARGE: ErrorSpec(413, "O arquivo excede o tamanho máximo permitido."),
+    ErrorCode.DOC_HAS_JAVASCRIPT: ErrorSpec(400, "PDFs com JavaScript embutido não são aceitos."),
+    ErrorCode.DOC_UNPROCESSABLE: ErrorSpec(400, "Não foi possível processar o PDF."),
+    ErrorCode.DOC_INVALID_POSITION: ErrorSpec(400, "Página ou posição do selo inválida."),
     ErrorCode.VALIDATION: ErrorSpec(400, "Dados inválidos."),
     ErrorCode.NOT_FOUND: ErrorSpec(404, "Recurso não encontrado."),
     ErrorCode.METHOD_NOT_ALLOWED: ErrorSpec(405, "Método não permitido para este recurso."),
+    ErrorCode.RATE_LIMITED: ErrorSpec(429, "Muitas requisições. Aguarde e tente novamente."),
     ErrorCode.INTERNAL: ErrorSpec(500, "Erro interno. Tente novamente mais tarde."),
 }
 
