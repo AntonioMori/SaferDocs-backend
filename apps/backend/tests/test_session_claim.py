@@ -95,13 +95,19 @@ def test_sessao_de_outro_usuario_e_recusada(client, conta):
     outro = session_token(conta["id"])
     sessao_alheia = decode_access_token(outro)["session_id"]
     token, _ = encode_access_token(
-        uuid.uuid4(), {"session_id": sessao_alheia, "ua_hash": keyed_hash("testclient")}
+        uuid.uuid4(),
+        {"session_id": sessao_alheia, "ua_hash": keyed_hash("testclient"), "ip": keyed_hash("testclient")},
     )
     assert _get(client, token).json()["code"] == "AUTH_004"
 
 
 def test_sessao_inexistente_e_recusada(client, conta):
     token, _ = encode_access_token(
-        conta["id"], {"session_id": str(uuid.uuid4()), "ua_hash": keyed_hash("testclient")}
+        conta["id"],
+        {
+            "session_id": str(uuid.uuid4()),
+            "ua_hash": keyed_hash("testclient"),
+            "ip": keyed_hash("testclient"),
+        },
     )
     assert _get(client, token).status_code == 401
