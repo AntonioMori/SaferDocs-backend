@@ -5,10 +5,11 @@ protegidas devem usá-la no router inteiro, não rota a rota:
 
     router = APIRouter(dependencies=[Depends(get_current_user)])
 
-Verificações feitas hoje: assinatura, emissor e expiração do JWT; sessão
-existente, do mesmo usuário e não revogada (REQ-28).
-Ainda falta (REQ-22, mesma assinatura): denylist, troca de senha,
-User-Agent e alerta de IP (Figura 4).
+Verificações feitas hoje: assinatura, emissor e expiração do JWT; mesmo
+User-Agent do login (REQ-27); sessão existente, do mesmo usuário e não
+revogada (REQ-28).
+Ainda falta (REQ-22, mesma assinatura): denylist, troca de senha e alerta
+de IP (Figura 4).
 Para testar rotas protegidas: `uv run python scripts/dev_token.py`.
 """
 
@@ -23,7 +24,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode
+from app.core.request_info import user_agent
 from app.crypto.jwt import decode_access_token
+from app.crypto.keyed_hash import keyed_hash_matches
 from app.db.models import User, UserSession
 from app.db.session import get_db
 
@@ -55,6 +58,10 @@ def get_auth_context(
         session_id = uuid.UUID(claims["session_id"])
     except (jwt.PyJWTError, ValueError):
         raise AppError(ErrorCode.AUTH_TOKEN_INVALID) from None
+
+    # REQ-27: o User-Agent precisa ser o mesmo do login (token usado em outro dispositivo).
+    if not keyed_hash_matches(user_agent(request), str(claims["ua_hash"])):
+        raise AppError(ErrorCode.AUTH_TOKEN_REVOKED)
 
     # REQ-28: a sessão precisa existir, ser do mesmo usuário e não ter sido revogada.
     session = db.get(UserSession, session_id)
