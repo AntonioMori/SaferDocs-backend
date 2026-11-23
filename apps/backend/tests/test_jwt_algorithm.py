@@ -19,8 +19,11 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
+SESSAO = {"session_id": str(uuid.uuid4())}
+
+
 def _claims_validos() -> dict:
-    _, claims = encode_access_token(uuid.uuid4())
+    _, claims = encode_access_token(uuid.uuid4(), SESSAO)
     return claims
 
 
@@ -31,7 +34,7 @@ def test_token_emitido_usa_es256():
 
 
 def test_token_valido_e_aceito():
-    token, claims = encode_access_token(uuid.uuid4())
+    token, claims = encode_access_token(uuid.uuid4(), SESSAO)
     assert decode_access_token(token)["jti"] == claims["jti"]
 
 
@@ -78,6 +81,6 @@ def test_payload_adulterado_e_rejeitado():
 
 
 def test_emissor_diferente_e_rejeitado():
-    token, _ = encode_access_token(uuid.uuid4(), {"iss": "outro-sistema"})
+    token, _ = encode_access_token(uuid.uuid4(), {**SESSAO, "iss": "outro-sistema"})
     with pytest.raises(jwt.InvalidIssuerError):
         decode_access_token(token)
