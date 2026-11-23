@@ -15,7 +15,9 @@ from sqlalchemy.exc import OperationalError
 
 from app.api.v1.router import api_router
 from app.core.config import ConfigError, Settings, get_settings
+from app.core.errors import register_error_handlers
 from app.db.session import check_database
+from app.middlewares.request_id import RequestIdMiddleware
 
 logger = logging.getLogger("saferdocs")
 
@@ -62,6 +64,8 @@ def create_app() -> FastAPI:
         openapi_url=None if settings.is_production else "/api/v1/openapi.json",
         lifespan=lifespan,
     )
+    register_error_handlers(app)
+    app.add_middleware(RequestIdMiddleware)
     app.include_router(api_router)
     return app
 
