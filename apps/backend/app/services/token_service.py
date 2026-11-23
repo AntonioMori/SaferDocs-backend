@@ -2,11 +2,8 @@
 
 `issue_tokens` é chamada pelo login com senha, pelo passo do TOTP e pelo
 login com passkey. Ela cria uma sessão (REQ-28), emite o access token com o
-claim `session_id` e um refresh token opaco (REQ-19). Não faz commit: quem
-chama controla a transação.
-
-Ainda falta (próxima issue, mesma assinatura): entregar o refresh token só
-no cookie HttpOnly (REQ-20).
+claim `session_id` e um refresh token opaco (REQ-19), entregue apenas no
+cookie HttpOnly (REQ-20). Não faz commit: quem chama controla a transação.
 """
 
 import hashlib
@@ -25,6 +22,8 @@ from app.crypto.keyed_hash import keyed_hash
 from app.db.models import RefreshToken, User, UserSession
 
 REFRESH_TOKEN_BYTES = 32  # 256 bits (REQ-19)
+REFRESH_COOKIE_NAME = "saferdocs_refresh"
+REFRESH_COOKIE_PATH = "/api/v1/auth"  # o navegador só envia o cookie às rotas de autenticação
 
 
 @dataclass(frozen=True)
@@ -76,14 +75,41 @@ def create_refresh_token(db: Session, session: UserSession) -> str:
     return token
 
 
+def set_refresh_cookie(response: Response, token: str) -> None:
+    """REQ-20: HttpOnly (JS não lê), Secure (só HTTPS), SameSite=Strict (não vai em requisição
+    de outro site) e Path restrito às rotas de autenticação."""
+    settings = get_settings()
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=token,
+        max_age=settings.refresh_token_ttl_seconds,
+        path=REFRESH_COOKIE_PATH,
+        secure=settings.cookie_secure,
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def clear_refresh_cookie(response: Response) -> None:
+    settings = get_settings()
+    response.delete_cookie(
+        key=REFRESH_COOKIE_NAME,
+        path=REFRESH_COOKIE_PATH,
+        secure=settings.cookie_secure,
+        httponly=True,
+        samesite="strict",
+    )
+
+
 def issue_tokens(db: Session, user: User, request: Request, response: Response) -> IssuedTokens:
-    """Cria a sessão e emite o par de tokens do usuário."""
-    del response  # recebe o cookie do refresh token (REQ-20)
+    """Cria a sessão, emite o access token e coloca o refresh token no cookie de `response`."""
     session = create_session(db, user, request)
+    refresh = create_refresh_token(db, session)
+    set_refresh_cookie(response, refresh)
     return IssuedTokens(
         access_token=access_token_for(user, session),
         expires_in=get_settings().access_token_ttl_seconds,
-        refresh_token=create_refresh_token(db, session),
+        refresh_token=refresh,
     )
 
 
