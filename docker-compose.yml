@@ -20,6 +20,9 @@ services:
   backend:
     build:
       context: ./apps/backend
+    env_file:
+      - path: ./apps/backend/.env
+        required: false
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     ports:
       - "8000:8000"
