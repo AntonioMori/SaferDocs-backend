@@ -16,7 +16,13 @@ from app.schemas.auth import ChangePasswordIn, TokenOut, UserOut
 from app.services import audit_service as audit
 from app.services import security_events
 from app.services.security_events import SecurityEventType
-from app.services.token_service import clear_refresh_cookie, issue_tokens, rotate_refresh_token
+from app.services.token_service import (
+    RefreshTokenReuse,
+    clear_refresh_cookie,
+    clear_refresh_cookie_header,
+    issue_tokens,
+    rotate_refresh_token,
+)
 
 
 def deny_access_token(db: Session, claims: dict) -> None:
@@ -67,10 +73,7 @@ def change_password(
 
     user.password_hash = hash_password(data.new_password)
     user.password_changed_at = datetime.now(UTC).replace(microsecond=0)
-    ativas = db.scalars(
-        select(UserSession.id).where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))
-    ).all()
-    revoke_sessions(db, list(ativas), reason="password_changed")
+    revoke_all_sessions(db, user.id, reason="password_changed")
     deny_access_token(db, context.claims)
 
     audit.record(
@@ -91,9 +94,46 @@ def change_password(
     )
 
 
+def revoke_all_sessions(db: Session, user_id: uuid.UUID, reason: str) -> list[uuid.UUID]:
+    """Encerra todas as sessões ativas do usuário e seus refresh tokens."""
+    ativas = list(
+        db.scalars(
+            select(UserSession.id).where(UserSession.user_id == user_id, UserSession.revoked_at.is_(None))
+        ).all()
+    )
+    revoke_sessions(db, ativas, reason=reason)
+    return ativas
+
+
+def _revoke_family(db: Session, user_id: uuid.UUID, request: Request) -> None:
+    derrubadas = revoke_all_sessions(db, user_id, reason="refresh_reuse")
+    details = {"revoked_sessions": len(derrubadas)}
+    audit.record(
+        db,
+        action=audit.AuditAction.REFRESH_TOKEN_REUSE,
+        result=audit.AuditResult.FAILURE,
+        request=request,
+        user_id=user_id,
+        details=details,
+    )
+    security_events.emit(
+        db, user_id=user_id, type=SecurityEventType.REFRESH_TOKEN_REUSE, request=request, details=details
+    )
+    db.commit()
+
+
 def refresh(db: Session, request: Request, response: Response) -> TokenOut:
-    """Rotação do refresh token (REQ-29): emite um par novo na mesma sessão."""
-    user, tokens = rotate_refresh_token(db, request, response)
+    """Rotação do refresh token (REQ-29): emite um par novo na mesma sessão.
+
+    REQ-30: se o token já tinha sido usado, ele foi copiado por alguém. Como não
+    dá para saber quem é o legítimo, todas as sessões do usuário caem.
+    """
+    try:
+        user, tokens = rotate_refresh_token(db, request, response)
+    except RefreshTokenReuse as reuse:
+        db.rollback()
+        _revoke_family(db, reuse.user_id, request)
+        raise AppError(ErrorCode.AUTH_REFRESH_INVALID, headers=clear_refresh_cookie_header()) from None
     for action in (audit.AuditAction.TOKEN_REFRESHED, audit.AuditAction.TOKEN_ISSUED):
         audit.record(db, action=action, result=audit.AuditResult.SUCCESS, request=request, user_id=user.id)
     db.commit()
