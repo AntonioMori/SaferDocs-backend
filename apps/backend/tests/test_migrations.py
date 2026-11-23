@@ -1,8 +1,8 @@
 """RNF-09: o schema é criado exclusivamente pelas migrations."""
 
+from alembic import command
 from sqlalchemy import inspect
 
-from alembic import command
 from app.db.session import get_engine
 from tests.conftest import alembic_config
 
