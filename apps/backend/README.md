@@ -2,6 +2,10 @@
 
 API REST do SaferDocs, sistema de assinatura digital de PDF. Feita em **Python 3.12 + FastAPI**, com **PostgreSQL** como banco.
 
+## Backend e frontend desacoplados
+
+Este repositório contém **só a API**. O frontend (React + Vite) é outra aplicação, em outro repositório (`SaferDocs-frontend`), e conversa com o backend **exclusivamente** pelos endpoints HTTP em `/api/v1`. O backend não renderiza HTML nem serve os arquivos do frontend; toda regra de negócio e de segurança fica aqui. As duas aplicações sobem, são testadas e são publicadas de forma independente.
+
 ## Arquitetura
 
 Toda requisição atravessa as camadas de cima para baixo. As verificações que valem para todas as requisições ficam na entrada, num lugar só, e não espalhadas pelas rotas.
