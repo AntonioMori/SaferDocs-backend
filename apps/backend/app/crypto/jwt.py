@@ -1,7 +1,7 @@
 """Emissão e validação do access token JWT (ES256).
 
-Claims: iss, sub, iat, exp (REQ-18), jti (REQ-24), ua_hash (REQ-27) e
-session_id (REQ-28).
+Claims: iss, sub, iat, exp (REQ-18), jti (REQ-24), ip (REQ-26), ua_hash
+(REQ-27) e session_id (REQ-28). ip e ua_hash são HMACs, nunca valores em claro.
 As verificações além da assinatura ficam em app/api/deps.py (Figura 4).
 """
 
@@ -48,5 +48,5 @@ def decode_access_token(token: str) -> dict[str, Any]:
         _keys()[1],
         algorithms=[ALGORITHM],
         issuer=get_settings().jwt_issuer,
-        options={"require": ["exp", "iat", "sub", "jti", "iss", "session_id", "ua_hash"]},
+        options={"require": ["exp", "iat", "sub", "jti", "iss", "session_id", "ua_hash", "ip"]},
     )

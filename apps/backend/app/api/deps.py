@@ -7,9 +7,8 @@ protegidas devem usá-la no router inteiro, não rota a rota:
 
 Verificações feitas hoje: assinatura, emissor e expiração do JWT; mesmo
 User-Agent do login (REQ-27); sessão existente, do mesmo usuário e não
-revogada (REQ-28).
-Ainda falta (REQ-22, mesma assinatura): denylist, troca de senha e alerta
-de IP (Figura 4).
+revogada (REQ-28); IP diferente do login só gera alerta (REQ-26).
+Ainda falta (REQ-22, mesma assinatura): denylist e troca de senha (Figura 4).
 Para testar rotas protegidas: `uv run python scripts/dev_token.py`.
 """
 
@@ -29,6 +28,7 @@ from app.crypto.jwt import decode_access_token
 from app.crypto.keyed_hash import keyed_hash_matches
 from app.db.models import User, UserSession
 from app.db.session import get_db
+from app.services.session_alerts import check_ip
 
 _bearer = HTTPBearer(auto_error=False)
 LAST_SEEN_RESOLUTION = timedelta(minutes=1)
@@ -71,6 +71,9 @@ def get_auth_context(
     user = db.get(User, user_id)
     if user is None:
         raise AppError(ErrorCode.AUTH_TOKEN_INVALID)
+
+    # REQ-26: IP diferente do login não rejeita, só gera alerta.
+    check_ip(db, session, str(claims["ip"]), request)
 
     now = datetime.now(UTC)
     if now - session.last_seen_at > LAST_SEEN_RESOLUTION:
