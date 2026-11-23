@@ -38,6 +38,15 @@ As rotas não acessam o banco nem fazem criptografia diretamente: sempre passam 
 
 ## Como executar
 
+### Configuração (`.env`)
+Todas as variáveis estão documentadas em [`.env.example`](.env.example). Para gerar um `.env` de desenvolvimento com segredos aleatórios (senha do banco, chaves do JWT, `MASTER_KEY` e `HASH_PEPPER`):
+```bash
+cd apps/backend
+uv run python scripts/generate_env.py          # API dentro do Docker
+uv run python scripts/generate_env.py --local  # API rodando fora do Docker
+```
+O `.env` nunca é commitado (está no `.gitignore`).
+
 ### Com Docker (recomendado)
 Na raiz do repositório:
 ```bash
