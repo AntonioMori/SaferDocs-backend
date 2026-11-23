@@ -9,6 +9,7 @@ cookie HttpOnly (REQ-20). Não faz commit: quem chama controla a transação.
 import hashlib
 import ipaddress
 import secrets
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -124,6 +125,14 @@ def clear_refresh_cookie_header() -> dict[str, str]:
     return {"set-cookie": response.headers["set-cookie"]}
 
 
+class RefreshTokenReuse(Exception):
+    """Refresh token apresentado pela segunda vez (REQ-30). Tratado em session_service.refresh."""
+
+    def __init__(self, user_id: uuid.UUID) -> None:
+        super().__init__("refresh token reutilizado")
+        self.user_id = user_id
+
+
 def _refresh_error() -> AppError:
     """Refresh inválido: mesma resposta para todos os casos, e o cookie é apagado."""
     return AppError(ErrorCode.AUTH_REFRESH_INVALID, headers=clear_refresh_cookie_header())
@@ -143,6 +152,10 @@ def rotate_refresh_token(db: Session, request: Request, response: Response) -> t
         raise _refresh_error()
 
     session = db.get(UserSession, record.session_id)
+    if record.used_at is not None and session is not None:
+        # REQ-30: alguém apresentou um refresh que já tinha sido trocado.
+        raise RefreshTokenReuse(user_id=session.user_id)
+
     now = datetime.now(UTC)
     if (
         record.used_at is not None
