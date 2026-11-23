@@ -57,7 +57,7 @@ def create_session(db: Session, user: User, request: Request) -> UserSession:
 
 
 def access_token_for(user: User, session: UserSession) -> str:
-    token, _ = encode_access_token(user.id, {"session_id": str(session.id)})
+    token, _ = encode_access_token(user.id, {"session_id": str(session.id), "ua_hash": session.ua_hmac})
     return token
 
 

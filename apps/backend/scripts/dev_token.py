@@ -57,7 +57,7 @@ def main() -> None:
         )
         db.add(session)
         db.commit()
-        token, _ = encode_access_token(user.id, {"session_id": str(session.id)})
+        token, _ = encode_access_token(user.id, {"session_id": str(session.id), "ua_hash": session.ua_hmac})
     print(token)
 
 
