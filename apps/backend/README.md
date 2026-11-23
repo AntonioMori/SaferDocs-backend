@@ -52,7 +52,12 @@ Na raiz do repositório:
 ```bash
 docker compose up --build
 ```
-A API sobe em `http://localhost:8000`. Teste: `curl http://localhost:8000/api/v1/health`.
+Sobe o PostgreSQL 16 e a API. A API só começa a atender depois de conectar no banco. Ela fica em `http://127.0.0.1:8000`; teste com `curl http://127.0.0.1:8000/api/v1/health`.
+
+Se as portas 8000 ou 5432 já estiverem ocupadas na sua máquina, escolha outras:
+```bash
+API_HOST_PORT=8010 DB_HOST_PORT=55432 docker compose up --build
+```
 
 ### Local, sem Docker
 Requer [uv](https://docs.astral.sh/uv/) e Python 3.12.
@@ -63,7 +68,9 @@ uv run uvicorn app.main:app --reload
 ```
 
 ## Testes e lint
+Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
+docker compose --profile test up -d db-test   # na raiz do repositório
 cd apps/backend
 uv run pytest
 uv run ruff check .
