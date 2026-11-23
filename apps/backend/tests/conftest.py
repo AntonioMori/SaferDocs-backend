@@ -54,6 +54,25 @@ for _name, _value in TEST_ENV.items():
     os.environ[_name] = _value
 
 
+def alembic_config():
+    from pathlib import Path
+
+    from alembic.config import Config
+
+    root = Path(__file__).resolve().parent.parent
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "alembic"))
+    return config
+
+
+@pytest.fixture(scope="session")
+def migrated_db(database_available) -> None:
+    """Banco de teste com todas as migrations aplicadas (RNF-09)."""
+    from alembic import command
+
+    command.upgrade(alembic_config(), "head")
+
+
 @pytest.fixture(scope="session")
 def database_available() -> None:
     """Falha com instrução clara se o banco de teste não estiver no ar."""
