@@ -72,6 +72,10 @@ def get_auth_context(
     if user is None:
         raise AppError(ErrorCode.AUTH_TOKEN_INVALID)
 
+    # REQ-25: token emitido antes da última troca de senha não vale mais.
+    if int(claims["iat"]) < int(user.password_changed_at.timestamp()):
+        raise AppError(ErrorCode.AUTH_TOKEN_REVOKED)
+
     # REQ-26: IP diferente do login não rejeita, só gera alerta.
     check_ip(db, session, str(claims["ip"]), request)
 

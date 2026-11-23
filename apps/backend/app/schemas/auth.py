@@ -58,6 +58,18 @@ class LoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class ChangePasswordIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _new_password(cls, value: str) -> str:
+        return check_password_policy(value)
+
+
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "Bearer"  # noqa: S105 (tipo do token, não é segredo)
