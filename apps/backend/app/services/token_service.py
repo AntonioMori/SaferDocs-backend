@@ -13,12 +13,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from fastapi import Request, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.errors import AppError, ErrorCode
 from app.core.request_info import client_ip, user_agent
 from app.crypto.jwt import encode_access_token
-from app.crypto.keyed_hash import keyed_hash
+from app.crypto.keyed_hash import keyed_hash, keyed_hash_matches
 from app.db.models import RefreshToken, User, UserSession
 
 REFRESH_TOKEN_BYTES = 32  # 256 bits (REQ-19)
@@ -109,6 +111,55 @@ def issue_tokens(db: Session, user: User, request: Request, response: Response) 
     refresh = create_refresh_token(db, session)
     set_refresh_cookie(response, refresh)
     return IssuedTokens(
+        access_token=access_token_for(user, session),
+        expires_in=get_settings().access_token_ttl_seconds,
+        refresh_token=refresh,
+    )
+
+
+def clear_refresh_cookie_header() -> dict[str, str]:
+    """Header Set-Cookie que apaga o refresh, para anexar a respostas de erro."""
+    response = Response()
+    clear_refresh_cookie(response)
+    return {"set-cookie": response.headers["set-cookie"]}
+
+
+def _refresh_error() -> AppError:
+    """Refresh inválido: mesma resposta para todos os casos, e o cookie é apagado."""
+    return AppError(ErrorCode.AUTH_REFRESH_INVALID, headers=clear_refresh_cookie_header())
+
+
+def rotate_refresh_token(db: Session, request: Request, response: Response) -> tuple[User, IssuedTokens]:
+    """REQ-29: troca o refresh token por um par novo e invalida o anterior (uso único)."""
+    raw = request.cookies.get(REFRESH_COOKIE_NAME)
+    if not raw:
+        raise _refresh_error()
+
+    # FOR UPDATE: duas requisições com o mesmo token não podem rotacioná-lo ao mesmo tempo.
+    record = db.scalar(
+        select(RefreshToken).where(RefreshToken.token_sha256 == hash_refresh_token(raw)).with_for_update()
+    )
+    if record is None:
+        raise _refresh_error()
+
+    session = db.get(UserSession, record.session_id)
+    now = datetime.now(UTC)
+    if (
+        record.used_at is not None
+        or record.revoked_at is not None
+        or record.expires_at <= now
+        or session is None
+        or session.revoked_at is not None
+        or not keyed_hash_matches(user_agent(request), session.ua_hmac)
+    ):
+        raise _refresh_error()
+
+    record.used_at = now
+    user = db.get(User, session.user_id)
+    refresh = create_refresh_token(db, session)
+    set_refresh_cookie(response, refresh)
+    session.last_seen_at = now
+    return user, IssuedTokens(
         access_token=access_token_for(user, session),
         expires_in=get_settings().access_token_ttl_seconds,
         refresh_token=refresh,
