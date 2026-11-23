@@ -1,3 +1,0 @@
-# Data Science Standard Environment
-dvc             # Data Version Control
-dvc-s3          # Plugin DVC para AWS S3 (comum, pode ser alterado para dvc-azure, etc)
