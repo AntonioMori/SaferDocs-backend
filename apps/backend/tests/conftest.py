@@ -65,6 +65,27 @@ def alembic_config():
     return config
 
 
+def session_token(user_id, *, user_agent: str = "testclient", ip: str = "testclient") -> str:
+    """Cria uma sessão real no banco e devolve um access token dela.
+
+    Os valores padrão batem com o que o TestClient envia (IP e User-Agent
+    "testclient"), para o token passar nas verificações da Figura 4.
+    """
+    from app.crypto.jwt import encode_access_token
+    from app.crypto.keyed_hash import keyed_hash
+    from app.db.models import UserSession
+    from app.db.session import get_sessionmaker
+
+    with get_sessionmaker()() as db:
+        session = UserSession(
+            user_id=user_id, user_agent=user_agent, ip_hmac=keyed_hash(ip), ua_hmac=keyed_hash(user_agent)
+        )
+        db.add(session)
+        db.commit()
+        token, _ = encode_access_token(user_id, {"session_id": str(session.id)})
+    return token
+
+
 @pytest.fixture(scope="session")
 def migrated_db(database_available) -> None:
     """Banco de teste com todas as migrations aplicadas (RNF-09)."""
