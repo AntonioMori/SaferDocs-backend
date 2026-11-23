@@ -40,6 +40,27 @@ Infraestrutura ┌──────────▼─────────�
 
 As rotas não acessam o banco nem fazem criptografia diretamente: sempre passam por um serviço.
 
+### Interfaces entre os módulos
+
+Os módulos se comunicam por estas funções. Algumas começaram como *stub* (assinatura final, comportamento provisório) para que cada parte pudesse ser desenvolvida em paralelo. O cabeçalho de cada arquivo diz se ainda é stub e qual requisito traz a implementação real.
+
+| Interface | Arquivo | Uso |
+|---|---|---|
+| `get_current_user` / `CurrentUser` | `app/api/deps.py` | Dependência de toda rota autenticada |
+| `issue_tokens(db, user, request, response)` | `app/services/token_service.py` | Fim de qualquer login (senha + TOTP, passkey, refresh) |
+| `audit.record(db, action=..., result=..., request=..., user_id=..., details=...)` | `app/services/audit_service.py` | Log de auditoria |
+| `security_events.emit(db, user_id=..., type=..., request=...)` | `app/services/security_events.py` | Atividade de segurança mostrada ao usuário |
+| `check_rate_limit(scope, key, limit)` / `limit_by_ip(scope, limit)` | `app/middlewares/rate_limit.py` | Rate limit por conta ou por IP |
+| `generate_user_keys(db, user)` | `app/services/user_keys.py` | Par de chaves de assinatura no cadastro |
+| `prepare_sign` / `finish_sign` / `verify` | `app/pdf/client.py` | Operações no pdf-worker isolado |
+| `encrypt` / `decrypt(AeadContext, ...)` | `app/crypto/aead.py` | AES-256-GCM com chave derivada por contexto |
+
+Para chamar rotas protegidas em desenvolvimento antes do login real existir:
+```bash
+uv run python scripts/dev_token.py --email dev@saferdocs.local
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8000/api/v1/...
+```
+
 ## Como executar
 
 ### Configuração (`.env`)
