@@ -47,3 +47,19 @@ class UserOut(BaseModel):
     id: uuid.UUID
     name: str
     email: str
+
+
+class LoginIn(BaseModel):
+    """Sem validar formato do e-mail: qualquer falha vira a mesma resposta (REQ-04)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "Bearer"  # noqa: S105 (tipo do token, não é segredo)
+    expires_in: int
+    user: UserOut
