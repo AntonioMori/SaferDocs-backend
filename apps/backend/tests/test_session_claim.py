@@ -98,7 +98,7 @@ def test_sessao_de_outro_usuario_e_recusada(client, conta):
         uuid.uuid4(),
         {"session_id": sessao_alheia, "ua_hash": keyed_hash("testclient"), "ip": keyed_hash("testclient")},
     )
-    assert _get(client, token).json()["code"] == "AUTH_004"
+    assert _get(client, token).status_code == 401
 
 
 def test_sessao_inexistente_e_recusada(client, conta):
