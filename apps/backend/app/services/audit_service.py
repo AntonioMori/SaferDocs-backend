@@ -75,12 +75,15 @@ _SENSITIVE_KEY = re.compile(
 )
 
 
-def _sanitize(value: Any) -> Any:
+def sanitize_details(value: Any) -> Any:
     """Remove de `details` qualquer coisa que pareça segredo ou conteúdo de arquivo."""
     if isinstance(value, dict):
-        return {str(k): REDACTED if _SENSITIVE_KEY.search(str(k)) else _sanitize(v) for k, v in value.items()}
+        return {
+            str(k): REDACTED if _SENSITIVE_KEY.search(str(k)) else sanitize_details(v)
+            for k, v in value.items()
+        }
     if isinstance(value, list | tuple):
-        return [_sanitize(v) for v in value]
+        return [sanitize_details(v) for v in value]
     if isinstance(value, bytes | bytearray | memoryview):
         return REDACTED
     return value
@@ -106,6 +109,6 @@ def record(
             user_agent=(user_agent(request) if request is not None else None) or UNKNOWN,
             action=action.value,
             result=AuditResult(result).value,
-            details=_sanitize(details) if details else None,
+            details=sanitize_details(details) if details else None,
         )
     )
