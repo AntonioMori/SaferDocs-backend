@@ -3,7 +3,15 @@
 from fastapi import APIRouter, Request, Response, status
 
 from app.api.deps import CurrentAuth, DbSession
-from app.schemas.auth import ChangePasswordIn, LoginIn, RegisterIn, TokenOut, UserOut
+from app.schemas.auth import (
+    ChangePasswordIn,
+    LoginIn,
+    LoginTotpIn,
+    MfaRequiredOut,
+    RegisterIn,
+    TokenOut,
+    UserOut,
+)
 from app.services import auth_service, session_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -15,10 +23,19 @@ def register(data: RegisterIn, request: Request, db: DbSession) -> UserOut:
     return UserOut.model_validate(auth_service.register(db, data, request))
 
 
-@router.post("/login", response_model=TokenOut)
-def login(data: LoginIn, request: Request, response: Response, db: DbSession) -> TokenOut:
-    """Login com e-mail e senha. Qualquer falha devolve a mesma mensagem (REQ-04)."""
+@router.post("/login", response_model=TokenOut | MfaRequiredOut)
+def login(data: LoginIn, request: Request, response: Response, db: DbSession) -> TokenOut | MfaRequiredOut:
+    """Login com e-mail e senha. Qualquer falha devolve a mesma mensagem (REQ-04).
+
+    Com 2FA ativo, devolve só `{mfa_required, mfa_token}` e nenhum token de acesso (REQ-15).
+    """
     return auth_service.login(db, data, request, response)
+
+
+@router.post("/login/totp", response_model=TokenOut)
+def login_totp(data: LoginTotpIn, request: Request, response: Response, db: DbSession) -> TokenOut:
+    """Segundo passo do login com 2FA: `mfa_token` + código do app."""
+    return auth_service.login_totp(db, data, request, response)
 
 
 @router.post("/refresh", response_model=TokenOut)
