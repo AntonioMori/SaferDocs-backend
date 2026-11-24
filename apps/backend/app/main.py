@@ -20,6 +20,7 @@ from app.db.session import check_database
 from app.middlewares.cors import CORSMiddleware
 from app.middlewares.request_id import RequestIdMiddleware
 from app.middlewares.security_headers import SecurityHeadersMiddleware
+from app.middlewares.unhandled_errors import UnhandledErrorMiddleware
 
 logger = logging.getLogger("saferdocs")
 
@@ -67,7 +68,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     register_error_handlers(app)
-    # O último adicionado é o mais externo: request_id -> security_headers -> CORS -> rotas.
+    # O último adicionado é o mais externo:
+    # request_id -> security_headers -> CORS -> unhandled_errors -> rotas.
+    app.add_middleware(UnhandledErrorMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allowed_origins=settings.cors_allowed_origins,
