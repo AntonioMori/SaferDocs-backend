@@ -64,3 +64,7 @@ def test_content_security_policy(responses):
 
 def test_strict_transport_security(responses):
     assert_everywhere(responses, "strict-transport-security", "max-age=63072000; includeSubDomains; preload")
+
+
+def test_x_frame_options(responses):
+    assert_everywhere(responses, "x-frame-options", "DENY")
