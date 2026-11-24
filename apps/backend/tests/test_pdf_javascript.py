@@ -118,7 +118,7 @@ COM_JAVASCRIPT = {
         1: b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /XFA 4 0 R >> >>",
         4: stream(b"<xdp:xdp><script>app.alert(1)</script></xdp:xdp>"),
     },
-    "js-no-trailer-info": {
+    "objeto-orfao-com-aa": {
         1: b"<< /Type /Catalog /Pages 2 0 R >>",
         4: b"<< /Title (x) /AA << /S /JavaScript /JS (x) >> >>",
     },
@@ -186,3 +186,23 @@ def test_api_recusa_javascript_na_assinatura_e_na_verificacao(fake_pdf_worker):
             chamada()
         assert erro.value.code == ErrorCode.DOC_HAS_JAVASCRIPT
         assert erro.value.spec.status == 400
+
+
+# --------------------------------------------------------------- QA caixa-branca (bloco PDF)
+
+
+def test_javascript_em_dicionario_direto_no_trailer():
+    pdf = raw_pdf({}).replace(b"/Root 1 0 R >>", b"/Root 1 0 R /X << /JS (app.alert(1)) >> >>")
+    assert b"/X << /JS" in pdf
+    assert worker_result(pdf) == {"ok": False, "error": "HAS_JAVASCRIPT"}
+
+
+def test_javascript_no_dicionario_de_um_stream():
+    # A ação está no dicionário do próprio stream, não no conteúdo.
+    pdf = raw_pdf(
+        {
+            1: b"<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>",
+            4: b"<< /Length 1 /S /JavaScript /JS (x) >>\nstream\nx\nendstream",
+        }
+    )
+    assert worker_result(pdf) == {"ok": False, "error": "HAS_JAVASCRIPT"}
