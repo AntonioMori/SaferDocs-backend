@@ -51,7 +51,7 @@ def test_cadastro_com_senha_forte(client):
     corpo = resposta.json()
     assert corpo["name"] == "Ana Souza"
     assert corpo["email"] == email
-    assert set(corpo) == {"id", "name", "email"}  # nada de hash na resposta
+    assert set(corpo) == {"id", "name", "email", "totp_enabled"}  # nada de hash nem segredo na resposta
 
     with get_sessionmaker()() as db:
         user = find_user_by_email(db, email)

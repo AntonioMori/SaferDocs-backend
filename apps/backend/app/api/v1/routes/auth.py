@@ -1,4 +1,4 @@
-"""Rotas de autenticação: cadastro, login, troca de senha e logout."""
+"""Rotas de autenticação: cadastro, login, dados da conta, troca de senha e logout."""
 
 from fastapi import APIRouter, Request, Response, status
 
@@ -33,6 +33,12 @@ def change_password(
 ) -> TokenOut:
     """Troca a senha. Todas as sessões anteriores são encerradas e um novo par é emitido (REQ-25)."""
     return session_service.change_password(db, context, data, request, response)
+
+
+@router.get("/me", response_model=UserOut)
+def me(context: CurrentAuth) -> UserOut:
+    """Dados do usuário autenticado, inclusive se o 2FA está ativo."""
+    return UserOut.model_validate(context.user)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
