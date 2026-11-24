@@ -227,6 +227,7 @@ Em desenvolvimento e no deploy, o front e a API ficam na mesma origem (proxy do 
 | `X-Frame-Options` | `DENY` | REQ-39 |
 | `X-Content-Type-Options` | `nosniff` | REQ-40 |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` | REQ-41 |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=()` | REQ-42 |
 
 Conferir com `curl -I http://localhost:8000/api/v1/health`.
 
