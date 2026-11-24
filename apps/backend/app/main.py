@@ -67,7 +67,11 @@ def create_app() -> FastAPI:
     )
     register_error_handlers(app)
     # O último adicionado é o mais externo: request_id -> CORS -> rotas.
-    app.add_middleware(CORSMiddleware, allowed_origins=settings.cors_allowed_origins)
+    app.add_middleware(
+        CORSMiddleware,
+        allowed_origins=settings.cors_allowed_origins,
+        max_age=settings.cors_max_age_seconds,
+    )
     app.add_middleware(RequestIdMiddleware)
     app.include_router(api_router)
     return app
