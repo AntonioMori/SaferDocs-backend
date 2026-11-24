@@ -48,7 +48,7 @@ Os módulos se comunicam por estas funções. Algumas começaram como *stub* (as
 |---|---|---|
 | `get_current_user` / `CurrentUser` | `app/api/deps.py` | Dependência de toda rota autenticada |
 | `issue_tokens(db, user, request, response)` | `app/services/token_service.py` | Fim de qualquer login (senha + TOTP, passkey, refresh) |
-| `audit.record(db, action=..., result=..., request=..., user_id=..., details=...)` | `app/services/audit_service.py` | Log de auditoria |
+| `audit.record(db, action=..., result=..., request=..., user_id=..., details=...)` | `app/services/audit_service.py` | Log de auditoria append-only (grava na transação de quem chama) |
 | `security_events.emit(db, user_id=..., type=..., request=...)` | `app/services/security_events.py` | Atividade de segurança mostrada ao usuário |
 | `check_rate_limit(scope, key, limit)` / `limit_by_ip(scope, limit)` | `app/middlewares/rate_limit.py` | Rate limit por conta ou por IP |
 | `generate_user_keys(db, user)` | `app/services/user_keys.py` | Par de chaves de assinatura no cadastro |
@@ -161,6 +161,19 @@ Regras (verificadas pelos testes em `tests/test_migration_rules.py` e `tests/tes
 - **Identificação:** o nome de cada arquivo começa com data e hora em UTC (`AAAAMMDD_HHMM_<revisão>_<descrição>.py`), gerado automaticamente pelo `alembic revision`.
 - **Upgrade e downgrade:** toda migration implementa as duas funções; `downgrade()` desfaz exatamente o que `upgrade()` fez.
 - **Trabalho em paralelo:** o histórico precisa ter uma única cabeça. Se duas pessoas criarem migrations ao mesmo tempo, antes do merge rode `uv run alembic heads` e, havendo duas, `uv run alembic merge heads -m "merge"`.
+
+## Log de auditoria (REQ-55)
+
+`audit.record(...)` grava na tabela `audit_log`, que só aceita inserção. São registrados login, logout, falha de autenticação, emissão de token, troca de senha, assinatura e verificação, além de outros eventos de segurança (bloqueio de conta, reuso de refresh, sessões encerradas).
+
+A imutabilidade tem duas barreiras independentes, criadas pela migration `208d8c8cdcb5`:
+- **Triggers:** `UPDATE`, `DELETE` e `TRUNCATE` no `audit_log` falham com `audit_log é append-only`, inclusive para o dono da tabela e para superusuários.
+- **Permissões:** o papel `saferdocs_app` tem acesso normal às demais tabelas, mas só `SELECT` e `INSERT` no `audit_log`.
+
+Em produção, a API deve conectar com um usuário membro desse papel, e só as migrations usam o dono do banco:
+```sql
+CREATE ROLE saferdocs_api LOGIN PASSWORD '<senha forte>' IN ROLE saferdocs_app;
+```
 
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:

@@ -5,14 +5,18 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, func, text
-from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
 
 class AuditLog(Base):
-    """Log append-only. Sem FK para users: o registro sobrevive a qualquer mudança."""
+    """Log append-only (REQ-55). Sem FK para users: o registro sobrevive a qualquer mudança.
+
+    No banco, triggers recusam UPDATE, DELETE e TRUNCATE, e o papel
+    `saferdocs_app` só tem SELECT e INSERT (migration 208d8c8cdcb5).
+    """
 
     __tablename__ = "audit_log"
     __table_args__ = (Index("ix_audit_log_user_occurred", "user_id", "occurred_at"),)
@@ -22,7 +26,7 @@ class AuditLog(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    ip: Mapped[str | None] = mapped_column(INET)
+    ip: Mapped[str | None] = mapped_column(String(64))
     user_agent: Mapped[str | None] = mapped_column(Text)
     action: Mapped[str] = mapped_column(String(40), nullable=False)
     result: Mapped[str] = mapped_column(String(10), nullable=False)
