@@ -9,9 +9,8 @@ from fastapi.testclient import TestClient
 from app.api.deps import CurrentUser
 from app.crypto.jwt import decode_access_token
 from app.crypto.keyed_hash import keyed_hash
-from app.db.models import SecurityEvent
 from app.main import create_app
-from app.services import audit_service, security_events
+from app.services import audit_service
 
 SENHA = "Senha-Forte#2026"
 IP_LOGIN = "203.0.113.10"
@@ -48,13 +47,8 @@ def auditoria(monkeypatch):
 
 
 @pytest.fixture
-def eventos_persistidos(monkeypatch):
-    """Simula a versão real do emit (REQ-58), que grava em security_events."""
-
-    def emit(db, *, user_id, type, request, details=None):  # noqa: A002
-        db.add(SecurityEvent(user_id=user_id, type=type, details=details))
-
-    monkeypatch.setattr(security_events, "emit", emit)
+def eventos_persistidos():
+    """O emit real (REQ-58) grava em security_events; a deduplicação depende disso."""
 
 
 def _get(app, token, ip):

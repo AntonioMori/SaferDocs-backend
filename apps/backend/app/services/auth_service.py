@@ -14,6 +14,7 @@ from app.db.models import User
 from app.middlewares.rate_limit import check_rate_limit
 from app.schemas.auth import LoginIn, RegisterIn, TokenOut, UserOut
 from app.services import audit_service as audit
+from app.services import security_events
 from app.services.token_service import issue_tokens
 from app.services.user_keys import generate_user_keys
 
@@ -31,6 +32,7 @@ def register(db: Session, data: RegisterIn, request: Request) -> User:
     db.add(user)
     db.flush()  # gera o id, usado como dado associado na cifragem da chave privada
     generate_user_keys(db, user)
+    security_events.check_login_ip(db, user.id, request)  # IP do cadastro: o primeiro conhecido
     audit.record(
         db,
         action=audit.AuditAction.USER_REGISTERED,
@@ -113,4 +115,5 @@ def login(db: Session, data: LoginIn, request: Request, response: Response) -> T
         token_type=tokens.token_type,
         expires_in=tokens.expires_in,
         user=UserOut.model_validate(user),
+        unseen_security_events=security_events.unseen_count(db, user.id),
     )

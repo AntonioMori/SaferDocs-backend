@@ -23,6 +23,7 @@ from app.core.request_info import client_ip, user_agent
 from app.crypto.jwt import encode_access_token
 from app.crypto.keyed_hash import keyed_hash, keyed_hash_matches
 from app.db.models import RefreshToken, User, UserSession
+from app.services import security_events
 
 REFRESH_TOKEN_BYTES = 32  # 256 bits (REQ-19)
 REFRESH_COOKIE_NAME = "saferdocs_refresh"
@@ -107,8 +108,12 @@ def clear_refresh_cookie(response: Response) -> None:
 
 
 def issue_tokens(db: Session, user: User, request: Request, response: Response) -> IssuedTokens:
-    """Cria a sessão, emite o access token e coloca o refresh token no cookie de `response`."""
+    """Cria a sessão, emite o access token e coloca o refresh token no cookie de `response`.
+
+    Também avisa o usuário se o login veio de um IP que a conta nunca usou (REQ-58).
+    """
     session = create_session(db, user, request)
+    security_events.check_login_ip(db, user.id, request)
     refresh = create_refresh_token(db, session)
     set_refresh_cookie(response, refresh)
     return IssuedTokens(
