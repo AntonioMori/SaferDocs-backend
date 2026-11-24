@@ -27,7 +27,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import Request
-from python_multipart.multipart import MultipartParseError, MultipartParser, parse_options_header
+from python_multipart.exceptions import FormParserError
+from python_multipart.multipart import MultipartParser, parse_options_header
+from starlette.requests import ClientDisconnect
 
 from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode, FieldError
@@ -161,21 +163,25 @@ async def read_pdf_upload(
 
     max_body_bytes = max_file_bytes + MULTIPART_OVERHEAD_BYTES
     declared = request.headers.get("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > max_body_bytes:
+    # isascii: "²".isdigit() é True, mas int("²") falha.
+    if declared is not None and declared.isascii() and declared.isdigit() and int(declared) > max_body_bytes:
         raise _too_large()  # nem começa a ler
 
     collector = _Collector(max_file_bytes=max_file_bytes, text_fields=text_fields)
-    parser = MultipartParser(boundary, collector.callbacks())  # type: ignore[arg-type]
     received = 0
     try:
+        # Dentro do try: o próprio construtor recusa boundary com mais de 256 bytes.
+        parser = MultipartParser(boundary, collector.callbacks())  # type: ignore[arg-type]
         async for chunk in request.stream():
             received += len(chunk)
             if received > max_body_bytes:
                 raise _too_large()  # Content-Length ausente ou falso: para no limite
             parser.write(chunk)
         parser.finalize()
-    except MultipartParseError:
+    except FormParserError:
         raise _invalid(FILE_FIELD, "envio inválido") from None
+    except ClientDisconnect:
+        raise _invalid(FILE_FIELD, "envio incompleto") from None
 
     if not collector.ended:
         raise _invalid(FILE_FIELD, "envio incompleto")
