@@ -188,3 +188,15 @@ def test_options_sem_request_method_nao_e_preflight():
     response = client.options("/api/v1/health", headers={"Origin": ALLOWED})
     assert response.status_code == 405
     assert response.headers["access-control-allow-origin"] == ALLOWED
+
+
+def test_origem_do_env_com_caixa_e_porta_padrao_casa_com_o_navegador(monkeypatch):
+    from app.core.config import Settings
+    from app.main import create_app
+
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "HTTPS://App.Example:443/")
+    monkeypatch.setenv("WEBAUTHN_ORIGIN", "http://localhost:3039")
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    monkeypatch.setattr("app.main._settings_or_exit", lambda: settings)
+    response = TestClient(create_app()).get("/api/v1/health", headers={"Origin": "https://app.example"})
+    assert response.headers["access-control-allow-origin"] == "https://app.example"
