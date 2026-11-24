@@ -116,3 +116,66 @@ def test_origem_com_query_fragmento_credencial_ou_porta_invalida_e_recusada(monk
         "ftp://a.example",
     ):
         assert "CORS_ALLOWED_ORIGINS" in _erro(monkeypatch, CORS_ALLOWED_ORIGINS=origem), origem
+
+
+# --------------------------------------------------------------- QA caixa-branca: origens
+
+
+@pytest.mark.parametrize(
+    "origem",
+    [
+        "https://a.example:0",
+        "https://a b.example",
+        "https://a.example:",
+        "https://a..example",
+        "https://a_b!.example",
+        "http://127.1",
+        "http://[::zz]",
+    ],
+)
+def test_origem_que_nenhum_navegador_envia_e_recusada(monkeypatch, origem):
+    assert "CORS_ALLOWED_ORIGINS" in _erro(monkeypatch, CORS_ALLOWED_ORIGINS=origem), origem
+
+
+def test_origens_internacionais_ip_e_repetidas_sao_normalizadas(monkeypatch):
+    monkeypatch.setenv(
+        "CORS_ALLOWED_ORIGINS",
+        "https://bücher.example, http://[0:0::1]:8080, http://127.0.0.1:3039, "
+        "http://localhost:3039, http://LOCALHOST:3039/",
+    )
+    assert load_settings().cors_allowed_origins == [
+        "https://xn--bcher-kva.example",
+        "http://[::1]:8080",
+        "http://127.0.0.1:3039",
+        "http://localhost:3039",
+    ]
+
+
+def test_webauthn_origin_e_normalizada(monkeypatch):
+    monkeypatch.setenv("WEBAUTHN_ORIGIN", "HTTP://LocalHost:3039/")
+    assert load_settings().webauthn_origin == "http://localhost:3039"
+
+
+def _producao(monkeypatch, cors: str, webauthn_origin: str = "https://app.example") -> None:
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", cors)
+    monkeypatch.setenv("WEBAUTHN_RP_ID", "app.example")
+    monkeypatch.setenv("WEBAUTHN_ORIGIN", webauthn_origin)
+
+
+def test_producao_recusa_origem_cors_http(monkeypatch):
+    _producao(monkeypatch, "https://app.example, http://app.example")
+    with pytest.raises(ConfigError, match="https"):
+        load_settings()
+
+
+def test_producao_com_tudo_https_sobe(monkeypatch):
+    _producao(monkeypatch, "https://app.example:443/", "https://login.app.example")
+    assert load_settings().cors_allowed_origins == ["https://app.example"]
+
+
+def test_rp_id_exige_subdominio_com_ponto(monkeypatch):
+    monkeypatch.setenv("WEBAUTHN_RP_ID", "app.example")
+    monkeypatch.setenv("WEBAUTHN_ORIGIN", "https://evilapp.example")
+    with pytest.raises(ConfigError, match="WEBAUTHN_ORIGIN"):
+        load_settings()

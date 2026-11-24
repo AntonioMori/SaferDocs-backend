@@ -46,6 +46,8 @@ TEST_ENV = {
     "MASTER_KEY": _b64(secrets.token_bytes(32)),
     "HASH_PEPPER": _b64(secrets.token_bytes(32)),
     "CORS_ALLOWED_ORIGINS": "http://localhost:3039",
+    # Fixo aqui para um .env local com outro valor não mudar o resultado dos testes.
+    "CORS_MAX_AGE_SECONDS": "600",
     "WEBAUTHN_RP_ID": "localhost",
     "WEBAUTHN_ORIGIN": "http://localhost:3039",
 }
