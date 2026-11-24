@@ -2,7 +2,7 @@
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.core.password_policy import password_policy_violations
 
@@ -83,7 +83,14 @@ class LoginTotpIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mfa_token: str = Field(min_length=1, max_length=256)
-    code: str = Field(min_length=1, max_length=16)
+    code: str | None = Field(default=None, min_length=1, max_length=16)
+    recovery_code: str | None = Field(default=None, min_length=1, max_length=32)  # REQ-14
+
+    @model_validator(mode="after")
+    def _um_dos_dois(self) -> "LoginTotpIn":
+        if (self.code is None) == (self.recovery_code is None):
+            raise ValueError("informe code ou recovery_code")
+        return self
 
 
 class TokenOut(BaseModel):

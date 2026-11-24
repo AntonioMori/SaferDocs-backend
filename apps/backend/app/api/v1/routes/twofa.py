@@ -1,4 +1,7 @@
-"""Ativação e desativação do 2FA com TOTP (REQ-13). Todas as rotas exigem autenticação."""
+"""Ativação e desativação do 2FA com TOTP (REQ-13) e códigos de recuperação (REQ-14).
+
+Todas as rotas exigem autenticação.
+"""
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
@@ -26,3 +29,9 @@ def disable(data: TotpDisableIn, user: CurrentUser, request: Request, db: DbSess
     """Desativa o 2FA (exige senha e código)."""
     totp_service.disable(db, user, data.password, data.code, request)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/recovery-codes", response_model=TotpEnabledOut)
+def recovery_codes(data: TotpCodeIn, user: CurrentUser, request: Request, db: DbSession) -> TotpEnabledOut:
+    """Gera 10 códigos de recuperação novos; os anteriores deixam de valer."""
+    return totp_service.regenerate_recovery_codes(db, user, data.code, request)
