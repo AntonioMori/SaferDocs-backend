@@ -24,6 +24,7 @@ from app.core.errors import ErrorCode, error_response
 
 ALLOWED_METHODS = ("GET", "POST", "PUT", "DELETE", "OPTIONS")
 ALLOWED_HEADERS = ("Authorization", "Content-Type", "X-Request-ID")
+_ALLOWED_HEADERS_LOWER = frozenset(h.lower() for h in ALLOWED_HEADERS)
 
 
 class CORSMiddleware:
@@ -59,6 +60,10 @@ class CORSMiddleware:
         # REQ-32: só GET, POST, PUT, DELETE e OPTIONS (nomes de método diferenciam maiúsculas).
         if headers["access-control-request-method"].strip() not in ALLOWED_METHODS:
             return self._reject(scope, "Método não permitido para requisições de outra origem.")
+        # REQ-33: só Authorization, Content-Type e X-Request-ID (nomes de header não diferenciam).
+        requested = {h.strip().lower() for h in headers.get("access-control-request-headers", "").split(",")}
+        if not (requested - {""}).issubset(_ALLOWED_HEADERS_LOWER):
+            return self._reject(scope, "Header não permitido para requisições de outra origem.")
         return Response(
             status_code=204,
             headers={
