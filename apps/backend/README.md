@@ -254,6 +254,8 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
 
   Hoje o worker tem a operação `inspect`, que abre o PDF e devolve as páginas e seus tamanhos. `prepare_sign`, `finish_sign` e `verify` já passam pelo `inspect` no worker e ganham a lógica real com o REQ-46 e o REQ-50. Erros viram `DOC_004` (PDF corrompido, com senha ou que estoura tempo ou memória), `DOC_003` (JavaScript) e `DOC_005` (posição do selo). Com o worker fora do ar, a resposta é 500 `SYS_001`.
 
+- **PDF com JavaScript (REQ-63):** toda operação do worker começa em `open_pdf`, que abre o documento e roda `pdf_worker/validate.py`. A varredura é feita pelo parser (qpdf) e não por busca de texto nos bytes. Assim ela pega nomes com escape (`/J#53` é `/JS`), objetos dentro de object streams comprimidos, xref quebrada, objetos órfãos e atualizações incrementais. É recusado, com 400 `DOC_003`, o PDF em que qualquer dicionário, em qualquer profundidade, tenha a chave `/JS`, `/JavaScript` ou `/XFA` (formulário XFA, que carrega scripts próprios), seja uma ação `/S /JavaScript` ou um link `/S /URI` com endereço `javascript:`. A palavra "JavaScript" no texto da página ou numa string não é recusada, porque o que conta é a estrutura. Como `prepare_sign` e `verify` passam pelo worker, a recusa vale na assinatura e na verificação.
+
   O Windows não tem socket Unix, então a API que usa o worker roda pelo `docker compose`. Nos testes, a fixture `fake_pdf_worker` liga o cliente ao código real do worker por um par de sockets em memória. Os testes do servidor, que dependem de Linux (socket Unix e limites do sistema), rodam num container com o mesmo isolamento:
   ```bash
   docker compose --profile test run --rm worker-tests
