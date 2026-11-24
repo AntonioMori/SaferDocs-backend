@@ -203,6 +203,12 @@ Eventos que o próprio usuário precisa ver ficam em `security_events`, separado
 
 O login e o refresh devolvem `unseen_security_events`, para o front destacar os eventos não vistos logo após entrar.
 
+## CORS (REQ-31 a 36)
+
+`app/middlewares/cors.py` é uma implementação própria, para que nenhuma origem fora da lista receba header CORS algum.
+
+- **Origens (REQ-31):** só as de `CORS_ALLOWED_ORIGINS`, comparadas por igualdade exata. A resposta traz `Access-Control-Allow-Origin` com a própria origem, nunca `*` (o `*` já é recusado na inicialização), e `Vary: Origin`. Origem fora da lista não recebe nenhum header CORS, e o navegador bloqueia a leitura da resposta.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
