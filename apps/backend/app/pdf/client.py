@@ -97,8 +97,13 @@ def _call(op: str, args: dict[str, Any], pdf: bytes) -> tuple[dict[str, Any], by
     settings = get_settings()
     try:
         with _connect(settings.pdf_worker_socket, settings.pdf_worker_timeout_seconds) as sock:
-            sock.sendall(protocol.encode({"op": op, "args": args}, pdf))
-            sock.shutdown(socket.SHUT_WR)
+            try:
+                sock.sendall(protocol.encode({"op": op, "args": args}, pdf))
+                sock.shutdown(socket.SHUT_WR)
+            except (BrokenPipeError, ConnectionResetError):
+                # O worker pode responder (ex.: BUSY) e fechar antes de receber o PDF todo.
+                # A resposta já está no buffer: lê assim mesmo.
+                pass
             header, body = protocol.decode(protocol.reader_from_socket(sock))
     except (OSError, protocol.ProtocolError) as exc:
         # Só o tipo do erro vai para o log: nada do PDF nem do caminho interno do erro.
