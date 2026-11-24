@@ -72,3 +72,7 @@ def test_x_frame_options(responses):
 
 def test_x_content_type_options(responses):
     assert_everywhere(responses, "x-content-type-options", "nosniff")
+
+
+def test_referrer_policy(responses):
+    assert_everywhere(responses, "referrer-policy", "strict-origin-when-cross-origin")

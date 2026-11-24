@@ -22,6 +22,8 @@ SECURITY_HEADERS: dict[str, str] = {
     "X-Frame-Options": "DENY",
     # REQ-40: o navegador respeita o Content-Type e não adivinha o tipo (um PDF nunca vira HTML).
     "X-Content-Type-Options": "nosniff",
+    # REQ-41: para outros sites vai só a origem, nunca o caminho com ids de documento ou sessão.
+    "Referrer-Policy": "strict-origin-when-cross-origin",
 }
 
 
