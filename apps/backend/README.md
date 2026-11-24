@@ -218,7 +218,9 @@ Em desenvolvimento e no deploy, o front e a API ficam na mesma origem (proxy do 
 
 ## Cabeçalhos de segurança (REQ-37 a 44)
 
-`app/middlewares/security_headers.py` coloca os headers abaixo em **toda** resposta da API: sucesso, erro, rota inexistente e preflight. Os valores são fixos no código, e nenhuma variável de ambiente consegue enfraquecê-los. Ordem dos middlewares, de fora para dentro: `request_id -> security_headers -> CORS -> rotas`.
+`app/middlewares/security_headers.py` coloca os headers abaixo em **toda** resposta da API: sucesso, erro, rota inexistente e preflight. Os valores são fixos no código, e nenhuma variável de ambiente consegue enfraquecê-los. Ordem dos middlewares, de fora para dentro: `request_id -> security_headers -> CORS -> unhandled_errors -> rotas`.
+
+O `unhandled_errors` é o mais interno porque o handler de `Exception` do FastAPI roda por fora de todos os middlewares. Sem ele, um erro 500 sairia sem os headers de segurança, sem CORS e sem `X-Request-ID`. Ele captura a exceção, registra o detalhe só no log e devolve o `SYS_001` padronizado por dentro da cadeia.
 
 | Header | Valor | Requisito |
 |---|---|---|

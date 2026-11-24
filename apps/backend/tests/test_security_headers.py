@@ -120,3 +120,27 @@ def test_resposta_binaria_de_pdf_tambem_recebe_os_headers():
     assert response.headers["content-type"] == "application/pdf"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_erro_500_tambem_recebe_headers_de_seguranca_cors_e_request_id():
+    from fastapi import APIRouter
+
+    from app.main import create_app
+    from app.middlewares.security_headers import SECURITY_HEADERS
+
+    router = APIRouter()
+
+    @router.get("/_teste/explode")
+    def explode():
+        raise RuntimeError("detalhe interno que não pode vazar")
+
+    boom_app = create_app()
+    boom_app.include_router(router)
+    response = TestClient(boom_app).get("/_teste/explode", headers={"Origin": ORIGIN})
+    assert response.status_code == 500
+    assert response.json()["code"] == "SYS_001"
+    assert "detalhe interno" not in response.text
+    for name, value in SECURITY_HEADERS.items():
+        assert response.headers[name] == value, name
+    assert response.headers["access-control-allow-origin"] == ORIGIN
+    assert response.json()["request_id"] == response.headers["x-request-id"]
