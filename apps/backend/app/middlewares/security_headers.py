@@ -24,6 +24,8 @@ SECURITY_HEADERS: dict[str, str] = {
     "X-Content-Type-Options": "nosniff",
     # REQ-41: para outros sites vai só a origem, nunca o caminho com ids de documento ou sessão.
     "Referrer-Policy": "strict-origin-when-cross-origin",
+    # REQ-42: bloqueia câmera, microfone e localização, que a aplicação não usa.
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 }
 
 
