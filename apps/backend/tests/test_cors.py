@@ -158,6 +158,31 @@ def test_preflight_recusada_nao_recebe_credenciais():
         assert "access-control-allow-credentials" not in response.headers
 
 
+# --------------------------------------------------------------- cache da preflight (REQ-36)
+
+
+def test_preflight_retorna_max_age():
+    # CORS_MAX_AGE_SECONDS não é definido no conftest: vale o padrão de 600 s.
+    assert preflight().headers["access-control-max-age"] == "600"
+
+
+def test_max_age_vem_da_configuracao():
+    from starlette.applications import Starlette
+
+    from app.middlewares.cors import CORSMiddleware
+
+    custom = Starlette()
+    custom.add_middleware(CORSMiddleware, allowed_origins=[ALLOWED], max_age=42)
+    response = TestClient(custom).options(
+        "/", headers={"Origin": ALLOWED, "Access-Control-Request-Method": "GET"}
+    )
+    assert response.headers["access-control-max-age"] == "42"
+
+
+def test_preflight_recusada_nao_recebe_max_age():
+    assert "access-control-max-age" not in preflight(origin=FOREIGN).headers
+
+
 def test_options_sem_request_method_nao_e_preflight():
     # Sem Access-Control-Request-Method, é um OPTIONS comum e vai para as rotas.
     response = client.options("/api/v1/health", headers={"Origin": ALLOWED})

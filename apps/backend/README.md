@@ -212,6 +212,9 @@ O login e o refresh devolvem `unseen_security_events`, para o front destacar os 
 - **Métodos (REQ-32):** só `GET`, `POST`, `PUT`, `DELETE` e `OPTIONS`. Preflight pedindo outro método (como `PATCH`) recebe 403 `AUTH_009`, sem headers CORS.
 - **Headers (REQ-33):** só `Authorization`, `Content-Type` e `X-Request-ID`, sem diferenciar maiúsculas. Preflight pedindo qualquer outro header também recebe 403. Por isso o CSRF (REQ-65) é verificado pelo `Origin`/`Referer`, e não por um header de token.
 - **Credenciais (REQ-34):** `Access-Control-Allow-Credentials: true` (necessário para o cookie de refresh) vai só para as origens da lista, inclusive na preflight. Origem fora da lista, ou preflight recusada, não recebe esse header. Este é o motivo da implementação própria: o `CORSMiddleware` do Starlette envia o header de credenciais para qualquer origem. As origens permitidas também podem ler `X-Request-ID` e `Retry-After` (`Access-Control-Expose-Headers`).
+- **Cache da preflight (REQ-36):** a preflight aceita traz `Access-Control-Max-Age` com o valor de `CORS_MAX_AGE_SECONDS` (padrão 600 s), e o navegador não repete a preflight nesse intervalo.
+
+Em desenvolvimento e no deploy, o front e a API ficam na mesma origem (proxy do Vite ou nginx), então o navegador nem chega a usar CORS. As regras acima valem para qualquer outra origem que tente chamar a API.
 
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
