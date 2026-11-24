@@ -26,6 +26,8 @@ SECURITY_HEADERS: dict[str, str] = {
     "Referrer-Policy": "strict-origin-when-cross-origin",
     # REQ-42: bloqueia câmera, microfone e localização, que a aplicação não usa.
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    # REQ-44: desliga o filtro XSS legado, cuja heurística pode ser explorada; a proteção real é a CSP.
+    "X-XSS-Protection": "0",
 }
 
 
