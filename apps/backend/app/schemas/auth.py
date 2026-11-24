@@ -75,3 +75,5 @@ class TokenOut(BaseModel):
     token_type: str = "Bearer"  # noqa: S105 (tipo do token, não é segredo)
     expires_in: int
     user: UserOut
+    # REQ-58: eventos de segurança ainda não vistos, para o front destacar após o login.
+    unseen_security_events: int = 0

@@ -143,6 +143,7 @@ def refresh(db: Session, request: Request, response: Response) -> TokenOut:
         token_type=tokens.token_type,
         expires_in=tokens.expires_in,
         user=UserOut.model_validate(user),
+        unseen_security_events=security_events.unseen_count(db, user.id),
     )
 
 
