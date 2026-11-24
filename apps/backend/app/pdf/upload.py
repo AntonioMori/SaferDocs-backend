@@ -1,4 +1,4 @@
-"""Leitura do upload de PDF (REQ-61), em streaming e só em memória.
+"""Leitura do upload de PDF (REQ-60 e 61), em streaming e só em memória.
 
 O `UploadFile` do FastAPI grava em arquivo temporário todo upload acima de
 1 MB e só entrega o controle à rota depois de ler o corpo inteiro. Aqui o
@@ -7,6 +7,11 @@ O `UploadFile` do FastAPI grava em arquivo temporário todo upload acima de
 - **Tamanho (REQ-61):** `Content-Length` acima do limite é recusado sem ler
   nada; sem ele (ou com ele mentindo), a leitura para no primeiro byte que
   passar do limite. Os dois casos dão 413 (`ErrorCode.DOC_TOO_LARGE`).
+- **Magic number (REQ-60):** o arquivo precisa começar com os bytes `%PDF-`.
+  A conferência acontece assim que chegam os 5 primeiros bytes, antes de ler o
+  resto e antes de qualquer parsing; um `.exe` renomeado para `.pdf` para ali
+  (`ErrorCode.DOC_NOT_PDF`). Nome do arquivo e Content-Type da parte não contam:
+  o cliente controla os dois.
 - **Sem disco (seção 9.2 do enunciado):** o PDF fica num `bytearray` e nunca
   vai para arquivo, banco ou log.
 - **Formato fechado:** um único arquivo no campo `file` e só os campos de texto
@@ -31,6 +36,7 @@ FILE_FIELD = "file"
 MAX_TEXT_FIELD_BYTES = 256
 # Folga para boundaries, cabeçalhos das partes e campos de texto além do arquivo.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
+PDF_MAGIC = b"%PDF-"
 
 
 @dataclass(frozen=True)
@@ -108,14 +114,21 @@ class _Collector:
             assert self.pdf is not None
             if len(self.pdf) + len(chunk) > self.max_file_bytes:
                 raise _too_large()  # REQ-61: para no primeiro byte acima do limite
+            before = len(self.pdf)
             self.pdf += chunk
+            if before < len(PDF_MAGIC) <= len(self.pdf) and not self.pdf.startswith(PDF_MAGIC):
+                raise AppError(ErrorCode.DOC_NOT_PDF)  # REQ-60: nem lê o resto
         else:
             if len(self._buffer) + len(chunk) > MAX_TEXT_FIELD_BYTES:
                 raise _invalid(self._name or FILE_FIELD, f"máximo de {MAX_TEXT_FIELD_BYTES} bytes")
             self._buffer += chunk
 
     def on_part_end(self) -> None:
-        if not self._is_file and self._name is not None:
+        if self._is_file:
+            assert self.pdf is not None
+            if not self.pdf.startswith(PDF_MAGIC):  # arquivo com menos de 5 bytes
+                raise AppError(ErrorCode.DOC_NOT_PDF)
+        elif self._name is not None:
             try:
                 self.fields[self._name] = self._buffer.decode("utf-8")
             except UnicodeDecodeError:

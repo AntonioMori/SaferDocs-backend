@@ -242,6 +242,7 @@ Conferir com `curl -I http://localhost:8000/api/v1/health`.
 Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiros ficam na API e não abrem o arquivo. Os de parsing ficam no worker isolado.
 
 - **Leitura do upload (REQ-61):** `app/pdf/upload.py` lê o `multipart/form-data` em streaming, direto da conexão e só em memória. O `UploadFile` do FastAPI não é usado porque grava em arquivo temporário todo upload acima de 1 MB, e o PDF não pode ir para o disco (seção 9.2). Um `Content-Length` acima de `MAX_UPLOAD_MB` é recusado sem ler o corpo. Sem `Content-Length`, ou com um valor falso, a leitura para no primeiro byte acima do limite. Os dois casos dão 413 `DOC_002`. O formato é fechado: um único arquivo no campo `file` e só os campos de texto que a rota declarar, cada um com no máximo 256 bytes e uma vez só. As rotas usam a dependência `pdf_upload_with("page", "x", "y")`.
+- **Magic number (REQ-60):** o arquivo precisa começar exatamente com `%PDF-`. A conferência é feita assim que chegam os 5 primeiros bytes, mesmo divididos entre pedaços da rede. Um executável renomeado para `.pdf` é recusado com 400 `DOC_001` depois de ler só o primeiro pedaço. O nome do arquivo e o `Content-Type` da parte são ignorados, porque o cliente controla os dois.
 
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
