@@ -39,8 +39,40 @@ def _check_origin(origin: str) -> None:
     if origin == "*":
         raise ValueError("'*' não é permitido; liste as origens explicitamente")
     parts = urlsplit(origin)
-    if parts.scheme not in ("http", "https") or not parts.netloc or parts.path not in ("", "/"):
+    if (
+        parts.scheme.lower() not in ("http", "https")
+        or not parts.hostname
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+        or "@" in parts.netloc
+    ):
         raise ValueError(f"origem inválida: {origin!r} (use esquema://host[:porta])")
+
+
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _normalize_origin(origin: str) -> str:
+    """Deixa a origem no formato que o navegador envia no header `Origin`.
+
+    Esquema e host em minúsculas, sem barra no fim e sem a porta padrão do
+    esquema. Assim `https://App.ts.net:443/` do `.env` casa com o
+    `https://app.ts.net` que o navegador manda (a comparação do CORS é exata).
+    """
+    _check_origin(origin)
+    parts = urlsplit(origin)
+    scheme = parts.scheme.lower()
+    host = parts.hostname or ""  # urlsplit já devolve o hostname em minúsculas
+    if ":" in host:  # IPv6
+        host = f"[{host}]"
+    try:
+        port = parts.port
+    except ValueError:
+        raise ValueError(f"origem inválida: {origin!r} (porta inválida)") from None
+    if port is None or port == DEFAULT_PORTS[scheme]:
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
 
 
 class Settings(BaseSettings):
@@ -101,9 +133,7 @@ class Settings(BaseSettings):
     def _validate_origins(cls, value: list[str]) -> list[str]:
         if not value:
             raise ValueError("informe ao menos uma origem")
-        for origin in value:
-            _check_origin(origin)
-        return [origin.rstrip("/") for origin in value]
+        return [_normalize_origin(origin) for origin in value]
 
     @field_validator("database_url")
     @classmethod
@@ -136,8 +166,7 @@ class Settings(BaseSettings):
     @field_validator("webauthn_origin")
     @classmethod
     def _validate_webauthn_origin(cls, value: str) -> str:
-        _check_origin(value)
-        return value.rstrip("/")
+        return _normalize_origin(value)
 
     @model_validator(mode="after")
     def _validate_cross_fields(self) -> "Settings":

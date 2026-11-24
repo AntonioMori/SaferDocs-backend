@@ -105,3 +105,14 @@ def test_valores_do_ambiente_de_teste_nunca_aparecem_nas_mensagens(monkeypatch):
     mensagem = _erro(monkeypatch, APP_ENV="production", RATE_LIMIT_VERIFY_PER_IP="x")
     for nome in ("MASTER_KEY", "HASH_PEPPER", "JWT_PRIVATE_KEY_PEM_B64"):
         assert TEST_ENV[nome] not in mensagem
+
+
+def test_origem_com_query_fragmento_credencial_ou_porta_invalida_e_recusada(monkeypatch):
+    for origem in (
+        "https://a.example?x=1",
+        "https://a.example#x",
+        "https://user:senha@a.example",
+        "https://a.example:99999",
+        "ftp://a.example",
+    ):
+        assert "CORS_ALLOWED_ORIGINS" in _erro(monkeypatch, CORS_ALLOWED_ORIGINS=origem), origem
