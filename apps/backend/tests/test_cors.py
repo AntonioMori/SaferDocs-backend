@@ -105,6 +105,36 @@ def test_outros_metodos_sao_recusados_na_preflight():
         assert preflight(method=method).status_code == 403, method
 
 
+# --------------------------------------------------------------- headers (REQ-33)
+
+
+def test_headers_permitidos_passam_em_qualquer_caixa():
+    for headers in (
+        "authorization",
+        "Content-Type",
+        "x-request-id",
+        "AUTHORIZATION, content-type, X-Request-Id",
+    ):
+        assert preflight(headers=headers).status_code == 204, headers
+
+
+def test_header_customizado_e_recusado_na_preflight():
+    response = preflight(headers="authorization, x-csrf-token")
+    assert response.status_code == 403
+    assert response.json()["code"] == "AUTH_009"
+    assert "access-control-allow-origin" not in response.headers
+    assert "access-control-allow-headers" not in response.headers
+
+
+def test_outros_headers_sao_recusados_na_preflight():
+    for headers in ("cookie", "x-forwarded-for", "x-api-key", "authorization,,x-debug"):
+        assert preflight(headers=headers).status_code == 403, headers
+
+
+def test_lista_de_headers_vazia_ou_com_virgulas_sobrando_passa():
+    assert preflight(headers=" , authorization ,").status_code == 204
+
+
 def test_options_sem_request_method_nao_e_preflight():
     # Sem Access-Control-Request-Method, é um OPTIONS comum e vai para as rotas.
     response = client.options("/api/v1/health", headers={"Origin": ALLOWED})
