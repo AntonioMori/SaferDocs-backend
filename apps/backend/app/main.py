@@ -19,6 +19,7 @@ from app.core.errors import register_error_handlers
 from app.db.session import check_database
 from app.middlewares.cors import CORSMiddleware
 from app.middlewares.request_id import RequestIdMiddleware
+from app.middlewares.security_headers import SecurityHeadersMiddleware
 
 logger = logging.getLogger("saferdocs")
 
@@ -66,12 +67,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     register_error_handlers(app)
-    # O último adicionado é o mais externo: request_id -> CORS -> rotas.
+    # O último adicionado é o mais externo: request_id -> security_headers -> CORS -> rotas.
     app.add_middleware(
         CORSMiddleware,
         allowed_origins=settings.cors_allowed_origins,
         max_age=settings.cors_max_age_seconds,
     )
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(RequestIdMiddleware)
     app.include_router(api_router)
     return app
