@@ -321,3 +321,122 @@ def test_tamanho_declarado_e_conferido_antes_do_magic_number():
     response = _post("/_teste/upload", [("file", EXE + b"\x00" * (21 * MB), "a.pdf")])
     assert response.status_code == 413
     assert response.json()["code"] == "DOC_002"
+
+
+# --------------------------------------------------------------- QA caixa-branca (bloco PDF)
+
+
+def test_boundary_longo_e_400_e_nao_500():
+    body, content_type = _multipart([("file", PDF, "a.pdf")], boundary="a" * 300)
+    response = client.post("/_teste/upload", content=body, headers={"Content-Type": content_type})
+    assert response.status_code == 400
+    assert response.json()["code"] == "VAL_001"
+
+
+def test_content_length_com_digito_unicode_nao_vira_500():
+    from fastapi import Request
+
+    from app.core.errors import AppError
+    from app.pdf.upload import read_pdf_upload
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        # "²" em latin-1: isdigit() diz que é dígito, mas int() falha.
+        "headers": [(b"content-type", b"multipart/form-data; boundary=b"), (b"content-length", b"\xb2")],
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": b"--b--\r\n", "more_body": False}
+
+    import asyncio
+
+    with pytest.raises(AppError) as erro:
+        asyncio.run(read_pdf_upload(Request(scope, receive), max_file_bytes=MB))
+    assert erro.value.code.value == "VAL_001"  # chega ao fim sem arquivo: 400, não 500
+
+
+def test_cliente_que_desconecta_no_meio_e_400():
+    body, content_type = _multipart([("file", PDF + b"0" * (3 * MB), "a.pdf")])
+    pedacos = [body[i : i + MB] for i in range(0, len(body), MB)][:2]  # manda 2 MB e some
+
+    import asyncio
+
+    enviados: list[dict] = []
+    lidos = 0
+
+    async def receive():
+        nonlocal lidos
+        if lidos < len(pedacos):
+            lidos += 1
+            return {"type": "http.request", "body": pedacos[lidos - 1], "more_body": True}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        enviados.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/_teste/upload",
+        "raw_path": b"/_teste/upload",
+        "query_string": b"",
+        "headers": [(b"content-type", content_type.encode())],
+        "client": ("127.0.0.1", 5000),
+        "server": ("testserver", 80),
+    }
+    asyncio.run(test_app(scope, receive, send))
+    assert next(m["status"] for m in enviados if m["type"] == "http.response.start") == 400
+
+
+def test_epilogo_enorme_depois_do_arquivo_e_recusado_pela_contagem_total():
+    # O python-multipart descarta o epílogo em silêncio: só a contagem total de bytes o barra.
+    body, content_type = _multipart([("file", PDF, "a.pdf")])
+    body += b"x" * (30 * MB)
+    pedacos = [body[i : i + MB] for i in range(0, len(body), MB)]
+    status, lidos, _ = _asgi_post(pedacos, [(b"content-type", content_type.encode())])
+    assert status == 413
+    assert lidos <= 21
+
+
+def test_campo_de_texto_com_exatamente_256_bytes_passa():
+    response = _post(
+        "/_teste/upload-campos", [("file", PDF, "a.pdf"), ("page", b"1" * 256, None), ("x", b"1", None)]
+    )
+    assert response.status_code == 200
+
+
+def test_disposition_diferente_de_form_data_e_recusada():
+    body = (
+        b'--qa\r\nContent-Disposition: attachment; name="file"; filename="a.pdf"\r\n\r\n'
+        + PDF
+        + b"\r\n--qa--\r\n"
+    )
+    response = client.post(
+        "/_teste/upload", content=body, headers={"Content-Type": "multipart/form-data; boundary=qa"}
+    )
+    assert response.status_code == 400
+
+
+def test_parte_sem_content_disposition_depois_de_uma_valida_e_recusada():
+    body = (
+        b'--qa\r\nContent-Disposition: form-data; name="file"; filename="a.pdf"\r\n\r\n'
+        + PDF
+        + b"\r\n--qa\r\nContent-Type: text/plain\r\n\r\nsem nome\r\n--qa--\r\n"
+    )
+    response = client.post(
+        "/_teste/upload", content=body, headers={"Content-Type": "multipart/form-data; boundary=qa"}
+    )
+    assert response.status_code == 400
+
+
+def test_magic_em_pedacos_de_um_byte_para_logo_depois_do_quinto():
+    body, content_type = _multipart([("file", EXE + b"\x00" * MB, "a.pdf")])
+    inicio = body.index(b"MZ")
+    pedacos = [body[:inicio]] + [body[i : i + 1] for i in range(inicio, inicio + 10)] + [body[inicio + 10 :]]
+    status, lidos, total = _asgi_post(pedacos, [(b"content-type", content_type.encode())])
+    assert status == 400
+    assert lidos == 6, f"leu {lidos} de {total} pedaços"
