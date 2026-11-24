@@ -18,6 +18,8 @@ SECURITY_HEADERS: dict[str, str] = {
     ),
     # REQ-38: força HTTPS por 2 anos, também nos subdomínios, sem rebaixamento para HTTP.
     "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
+    # REQ-39: nenhum site pode embutir a aplicação num <iframe> (clickjacking).
+    "X-Frame-Options": "DENY",
 }
 
 
