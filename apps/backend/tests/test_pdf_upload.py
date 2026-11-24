@@ -440,3 +440,112 @@ def test_magic_em_pedacos_de_um_byte_para_logo_depois_do_quinto():
     status, lidos, total = _asgi_post(pedacos, [(b"content-type", content_type.encode())])
     assert status == 400
     assert lidos == 6, f"leu {lidos} de {total} pedaços"
+
+
+# --------------------------------------------------------------- QA caixa-preta: conexão, prazos e log
+
+
+@pytest.mark.parametrize(
+    ("partes", "status"),
+    [
+        ([("file", PDF + b"0" * (21 * MB), "a.pdf")], 413),
+        ([("file", EXE, "a.pdf")], 400),
+        ([("file", PDF, "a.pdf"), ("extra", b"1", None)], 400),
+    ],
+    ids=["grande", "nao-pdf", "campo-a-mais"],
+)
+def test_erro_de_upload_fecha_a_conexao(partes, status):
+    # Sem Connection: close o uvicorn continua lendo e descartando o corpo (o QA mandou ~10 GB).
+    response = _post("/_teste/upload", partes)
+    assert response.status_code == status
+    assert response.headers["connection"] == "close"
+
+
+def _asgi_com_receive(receive):
+    import asyncio
+
+    enviados: list[dict] = []
+
+    async def send(message):
+        enviados.append(message)
+
+    body, content_type = _multipart([("file", PDF, "a.pdf")])
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/_teste/upload",
+        "raw_path": b"/_teste/upload",
+        "query_string": b"",
+        "headers": [(b"content-type", content_type.encode())],
+        "client": ("127.0.0.1", 5000),
+        "server": ("testserver", 80),
+    }
+    asyncio.run(asyncio.wait_for(test_app(scope, receive(body), send), 10))
+    return next(m for m in enviados if m["type"] == "http.response.start")
+
+
+def test_envio_parado_e_encerrado_pelo_prazo_sem_dados(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr("app.pdf.upload.UPLOAD_IDLE_TIMEOUT_SECONDS", 0.2)
+
+    def receive(body):
+        enviado = False
+
+        async def _receive():
+            nonlocal enviado
+            if not enviado:
+                enviado = True
+                return {"type": "http.request", "body": body[:100], "more_body": True}
+            await asyncio.Event().wait()  # cliente parado para sempre
+
+        return _receive
+
+    response = _asgi_com_receive(receive)
+    assert response["status"] == 400
+    assert (b"connection", b"close") in response["headers"]
+
+
+def test_envio_a_conta_gotas_e_encerrado_pelo_prazo_total(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr("app.pdf.upload.UPLOAD_TOTAL_TIMEOUT_SECONDS", 0.5)
+
+    def receive(body):
+        posicao = 0
+
+        async def _receive():
+            nonlocal posicao
+            await asyncio.sleep(0.05)  # 1 byte a cada 50 ms: nunca fica parado, nunca termina
+            posicao += 1
+            return {"type": "http.request", "body": body[posicao - 1 : posicao], "more_body": True}
+
+        return _receive
+
+    assert _asgi_com_receive(receive)["status"] == 400
+
+
+def test_avisos_do_python_multipart_nao_vao_para_o_log():
+    import logging
+
+    assert logging.getLogger("python_multipart").getEffectiveLevel() >= logging.ERROR
+
+
+@pytest.mark.parametrize("nome", ['fi"le', "file\x00", "<script>", "a" * 40])
+def test_nome_de_campo_esquisito_nao_volta_na_resposta(nome):
+    body = (
+        b'--qa\r\nContent-Disposition: form-data; name="file"; filename="a.pdf"\r\n\r\n'
+        + PDF
+        + b'\r\n--qa\r\nContent-Disposition: form-data; name="'
+        + nome.replace('"', '\\"').encode()
+        + b'"\r\n\r\nx\r\n--qa--\r\n'
+    )
+    response = client.post(
+        "/_teste/upload", content=body, headers={"Content-Type": "multipart/form-data; boundary=qa"}
+    )
+    assert response.status_code == 400
+    assert nome not in response.text
+    assert response.json()["fields"][0]["field"] == "campo"

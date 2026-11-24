@@ -22,6 +22,9 @@ Uso numa rota:
     async def assinar(upload: Annotated[PdfUpload, Depends(pdf_upload_with("page", "x", "y"))]): ...
 """
 
+import asyncio
+import logging
+import re
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
@@ -39,6 +42,17 @@ MAX_TEXT_FIELD_BYTES = 256
 # Folga para boundaries, cabeçalhos das partes e campos de texto além do arquivo.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
 PDF_MAGIC = b"%PDF-"
+# Prazos de leitura do corpo: sem chegar nada por 15 s, ou o upload inteiro passando de
+# 5 min (20 MB a ~0,5 Mbit/s), a conexão é encerrada. O uvicorn não tem prazo de corpo.
+UPLOAD_IDLE_TIMEOUT_SECONDS = 15
+UPLOAD_TOTAL_TIMEOUT_SECONDS = 300
+# Em todo erro do upload a conexão é fechada: sem isso o uvicorn continua lendo (e
+# descartando) o resto do corpo para manter o keep-alive, por quanto o cliente mandar.
+CLOSE_CONNECTION = {"Connection": "close"}
+_SAFE_FIELD_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
+
+# Os avisos do python-multipart sobre corpo malformado citam bytes do corpo: fora do log.
+logging.getLogger("python_multipart").setLevel(logging.ERROR)
 
 
 @dataclass(frozen=True)
@@ -47,12 +61,23 @@ class PdfUpload:
     fields: dict[str, str] = field(default_factory=dict)
 
 
+def _safe_name(name: str) -> str:
+    """Nome de campo que pode voltar na resposta de erro; qualquer outro vira "campo"."""
+    return name if _SAFE_FIELD_NAME.match(name) else "campo"
+
+
 def _invalid(field_name: str, reason: str) -> AppError:
-    return AppError(ErrorCode.VALIDATION, fields=[FieldError(field_name, reason)])
+    return AppError(
+        ErrorCode.VALIDATION, fields=[FieldError(_safe_name(field_name), reason)], headers=CLOSE_CONNECTION
+    )
 
 
 def _too_large() -> AppError:
-    return AppError(ErrorCode.DOC_TOO_LARGE)
+    return AppError(ErrorCode.DOC_TOO_LARGE, headers=CLOSE_CONNECTION)
+
+
+def _not_pdf() -> AppError:
+    return AppError(ErrorCode.DOC_NOT_PDF, headers=CLOSE_CONNECTION)
 
 
 class _Collector:
@@ -119,7 +144,7 @@ class _Collector:
             before = len(self.pdf)
             self.pdf += chunk
             if before < len(PDF_MAGIC) <= len(self.pdf) and not self.pdf.startswith(PDF_MAGIC):
-                raise AppError(ErrorCode.DOC_NOT_PDF)  # REQ-60: nem lê o resto
+                raise _not_pdf()  # REQ-60: nem lê o resto
         else:
             if len(self._buffer) + len(chunk) > MAX_TEXT_FIELD_BYTES:
                 raise _invalid(self._name or FILE_FIELD, f"máximo de {MAX_TEXT_FIELD_BYTES} bytes")
@@ -129,7 +154,7 @@ class _Collector:
         if self._is_file:
             assert self.pdf is not None
             if not self.pdf.startswith(PDF_MAGIC):  # arquivo com menos de 5 bytes
-                raise AppError(ErrorCode.DOC_NOT_PDF)
+                raise _not_pdf()
         elif self._name is not None:
             try:
                 self.fields[self._name] = self._buffer.decode("utf-8")
@@ -172,7 +197,16 @@ async def read_pdf_upload(
     try:
         # Dentro do try: o próprio construtor recusa boundary com mais de 256 bytes.
         parser = MultipartParser(boundary, collector.callbacks())  # type: ignore[arg-type]
-        async for chunk in request.stream():
+        stream = request.stream().__aiter__()
+        deadline = asyncio.get_running_loop().time() + UPLOAD_TOTAL_TIMEOUT_SECONDS
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            try:
+                chunk = await asyncio.wait_for(anext(stream), min(UPLOAD_IDLE_TIMEOUT_SECONDS, remaining))
+            except StopAsyncIteration:
+                break
+            except TimeoutError:
+                raise _invalid(FILE_FIELD, "envio lento demais") from None
             received += len(chunk)
             if received > max_body_bytes:
                 raise _too_large()  # Content-Length ausente ou falso: para no limite
@@ -190,7 +224,9 @@ async def read_pdf_upload(
     missing = sorted(text_fields - collector.fields.keys())
     if missing:
         raise AppError(
-            ErrorCode.VALIDATION, fields=[FieldError(name, "campo obrigatório") for name in missing]
+            ErrorCode.VALIDATION,
+            fields=[FieldError(name, "campo obrigatório") for name in missing],
+            headers=CLOSE_CONNECTION,
         )
     return PdfUpload(pdf=bytes(collector.pdf), fields=collector.fields)
 
