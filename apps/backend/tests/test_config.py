@@ -19,3 +19,18 @@ def test_segredos_nao_aparecem_no_repr():
     texto = repr(settings)
     assert settings.master_key.get_secret_value() not in texto
     assert settings.hash_pepper.get_secret_value() not in texto
+
+
+def test_origens_sao_normalizadas_como_o_navegador_envia(monkeypatch):
+    # REQ-31: a comparação do CORS é exata, então o .env é normalizado na inicialização.
+    monkeypatch.setenv(
+        "CORS_ALLOWED_ORIGINS",
+        "HTTPS://App.Example:443/, http://LOCALHOST:80, http://localhost:3039/, http://[::1]:8080",
+    )
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.cors_allowed_origins == [
+        "https://app.example",
+        "http://localhost",
+        "http://localhost:3039",
+        "http://[::1]:8080",
+    ]
