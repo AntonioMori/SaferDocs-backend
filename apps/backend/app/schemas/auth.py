@@ -47,6 +47,7 @@ class UserOut(BaseModel):
     id: uuid.UUID
     name: str
     email: str
+    totp_enabled: bool = False
 
 
 class LoginIn(BaseModel):
