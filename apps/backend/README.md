@@ -237,6 +237,12 @@ O `Cache-Control: no-store` (REQ-43) vale para toda a API, e não só para as ro
 
 Conferir com `curl -I http://localhost:8000/api/v1/health`.
 
+## Upload e processamento de PDF (REQ-60 a 63)
+
+Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiros ficam na API e não abrem o arquivo. Os de parsing ficam no worker isolado.
+
+- **Leitura do upload (REQ-61):** `app/pdf/upload.py` lê o `multipart/form-data` em streaming, direto da conexão e só em memória. O `UploadFile` do FastAPI não é usado porque grava em arquivo temporário todo upload acima de 1 MB, e o PDF não pode ir para o disco (seção 9.2). Um `Content-Length` acima de `MAX_UPLOAD_MB` é recusado sem ler o corpo. Sem `Content-Length`, ou com um valor falso, a leitura para no primeiro byte acima do limite. Os dois casos dão 413 `DOC_002`. O formato é fechado: um único arquivo no campo `file` e só os campos de texto que a rota declarar, cada um com no máximo 256 bytes e uma vez só. As rotas usam a dependência `pdf_upload_with("page", "x", "y")`.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
