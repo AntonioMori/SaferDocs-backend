@@ -45,10 +45,13 @@ class CORSMiddleware:
             return
 
         headers = Headers(scope=scope)
-        origin = headers.get("origin")
-        if origin is None:
+        origins = headers.getlist("origin")
+        if not origins:
             await self.app(scope, receive, send)
             return
+        # Origin tem um único valor. Repetido (proxy que concatena, cliente forjado) conta
+        # como origem não confiável, para não validar só a primeira linha.
+        origin = origins[0] if len(origins) == 1 else None
 
         if scope["method"] == "OPTIONS" and "access-control-request-method" in headers:
             response = self._preflight(scope, origin)
@@ -57,15 +60,19 @@ class CORSMiddleware:
 
         await self.app(scope, receive, self._send_with_cors(send, origin))
 
-    def _preflight(self, scope: Scope, origin: str) -> Response:
-        if not self.is_allowed(origin):
+    def _preflight(self, scope: Scope, origin: str | None) -> Response:
+        if origin is None or not self.is_allowed(origin):
             return self._reject(scope)
         headers = Headers(scope=scope)
         # REQ-32: só GET, POST, PUT, DELETE e OPTIONS (nomes de método diferenciam maiúsculas).
-        if headers["access-control-request-method"].strip() not in ALLOWED_METHODS:
+        # Um único método por preflight: linhas repetidas são recusadas.
+        methods = headers.getlist("access-control-request-method")
+        if len(methods) != 1 or methods[0].strip() not in ALLOWED_METHODS:
             return self._reject(scope, "Método não permitido para requisições de outra origem.")
         # REQ-33: só Authorization, Content-Type e X-Request-ID (nomes de header não diferenciam).
-        requested = {h.strip().lower() for h in headers.get("access-control-request-headers", "").split(",")}
+        # Linhas repetidas valem como uma lista só (RFC 9110, seção 5.3): todas são conferidas.
+        requested_raw = ",".join(headers.getlist("access-control-request-headers"))
+        requested = {h.strip().lower() for h in requested_raw.split(",")}
         if not (requested - {""}).issubset(_ALLOWED_HEADERS_LOWER):
             return self._reject(scope, "Header não permitido para requisições de outra origem.")
         return Response(
@@ -87,8 +94,8 @@ class CORSMiddleware:
         response.headers["Vary"] = "Origin"
         return response
 
-    def _send_with_cors(self, send: Send, origin: str) -> Send:
-        allowed = self.is_allowed(origin)
+    def _send_with_cors(self, send: Send, origin: str | None) -> Send:
+        allowed = origin is not None and self.is_allowed(origin)
 
         async def wrapped(message: Message) -> None:
             if message["type"] == "http.response.start":
