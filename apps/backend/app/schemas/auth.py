@@ -71,6 +71,21 @@ class ChangePasswordIn(BaseModel):
         return check_password_policy(value)
 
 
+class MfaRequiredOut(BaseModel):
+    """REQ-15: senha certa com 2FA ativo. Nenhum token de acesso ainda, só o desafio."""
+
+    mfa_required: bool = True
+    mfa_token: str  # opaco, uso único, vale só para POST /auth/login/totp
+    expires_in: int
+
+
+class LoginTotpIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mfa_token: str = Field(min_length=1, max_length=256)
+    code: str = Field(min_length=1, max_length=16)
+
+
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "Bearer"  # noqa: S105 (tipo do token, não é segredo)
