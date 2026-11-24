@@ -47,7 +47,9 @@ class CORSMiddleware:
         headers = Headers(scope=scope)
         origins = headers.getlist("origin")
         if not origins:
-            await self.app(scope, receive, send)
+            # Sem Origin a resposta sai sem headers CORS, mas ainda leva Vary: Origin:
+            # a mesma URL responde diferente quando a Origin é permitida.
+            await self.app(scope, receive, self._send_with_cors(send, None))
             return
         # Origin tem um único valor. Repetido (proxy que concatena, cliente forjado) conta
         # como origem não confiável, para não validar só a primeira linha.

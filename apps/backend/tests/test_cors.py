@@ -43,6 +43,13 @@ def test_sem_origin_nao_adiciona_headers_cors():
     response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert "access-control-allow-origin" not in response.headers
+    assert "access-control-allow-credentials" not in response.headers
+
+
+def test_sem_origin_ainda_leva_vary_origin():
+    # A mesma URL responde com ou sem CORS conforme a Origin: caches precisam saber disso.
+    for path in ("/api/v1/health", "/api/v1/sessions", "/api/v1/nao-existe"):
+        assert "Origin" in client.get(path).headers.get("vary", ""), path
 
 
 # --------------------------------------------------------------- preflight (REQ-35)
