@@ -68,3 +68,7 @@ def test_strict_transport_security(responses):
 
 def test_x_frame_options(responses):
     assert_everywhere(responses, "x-frame-options", "DENY")
+
+
+def test_x_content_type_options(responses):
+    assert_everywhere(responses, "x-content-type-options", "nosniff")
