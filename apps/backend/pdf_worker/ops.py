@@ -15,7 +15,7 @@ from typing import Any
 import pikepdf
 
 from pdf_worker.protocol import ERR_BAD_REQUEST, ERR_HAS_JAVASCRIPT, ERR_UNPROCESSABLE
-from pdf_worker.validate import has_javascript
+from pdf_worker.validate import DamagedPdfError, has_javascript, has_javascript_in_rebuilt
 
 MAX_PAGES = 5000
 
@@ -31,13 +31,19 @@ def open_pdf(pdf: bytes) -> pikepdf.Pdf:
 
     PDF corrompido ou protegido por senha não é processável.
     """
+    scan_errors = (pikepdf.PdfError, ValueError, TypeError, RecursionError, DamagedPdfError)
+    try:
+        if has_javascript_in_rebuilt(pdf):  # antes de abrir o principal: uma cópia por vez
+            raise OpError(ERR_HAS_JAVASCRIPT)
+    except scan_errors:
+        raise OpError(ERR_UNPROCESSABLE) from None
     try:
         document = pikepdf.open(io.BytesIO(pdf))
     except (pikepdf.PdfError, pikepdf.PasswordError, ValueError, OSError):
         raise OpError(ERR_UNPROCESSABLE) from None
     try:
         javascript = has_javascript(document)
-    except (pikepdf.PdfError, ValueError, TypeError, RecursionError):
+    except scan_errors:
         document.close()
         raise OpError(ERR_UNPROCESSABLE) from None
     if javascript:
