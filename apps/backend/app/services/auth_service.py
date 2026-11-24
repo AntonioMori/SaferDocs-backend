@@ -142,6 +142,8 @@ def _invalid_mfa(db: Session, request: Request, user_id, reason: str, action=Non
         user_id=user_id,
         details={"reason": reason, "step": "totp"},
     )
+    if action == audit.AuditAction.TOTP_FAILURE:
+        totp_service.alert_on_repeated_failures(db, user_id, request)  # REQ-16
     db.commit()
     return AppError(ErrorCode.AUTH_INVALID_MFA)
 

@@ -162,6 +162,21 @@ Regras (verificadas pelos testes em `tests/test_migration_rules.py` e `tests/tes
 - **Upgrade e downgrade:** toda migration implementa as duas funções; `downgrade()` desfaz exatamente o que `upgrade()` fez.
 - **Trabalho em paralelo:** o histórico precisa ter uma única cabeça. Se duas pessoas criarem migrations ao mesmo tempo, antes do merge rode `uv run alembic heads` e, havendo duas, `uv run alembic merge heads -m "merge"`.
 
+## Verificação em duas etapas (REQ-11 a 16)
+
+TOTP da RFC 6238 (30 s, 6 dígitos, tolerância de ±1 janela), compatível com Google Authenticator e Authy. O passo de tempo aceito fica em `users.totp_last_step`, então o mesmo código não vale duas vezes. O segredo tem 160 bits e fica cifrado com AES-256-GCM (chave derivada da `MASTER_KEY`, id do usuário como dado associado).
+
+| Rota | Corpo | Resposta |
+|---|---|---|
+| `POST /auth/2fa/setup` | n/a | `{otpauth_uri, secret}`: o front gera o QR Code a partir da URI. Ainda não ativa |
+| `POST /auth/2fa/enable` | `{code}` | `{recovery_codes}`: ativa e mostra os 10 códigos de recuperação uma única vez |
+| `POST /auth/2fa/disable` | `{password, code}` | 204 |
+| `POST /auth/2fa/recovery-codes` | `{code}` | `{recovery_codes}`: conjunto novo, os antigos deixam de valer |
+| `POST /auth/login` | `{email, password}` | Com 2FA ativo: `{mfa_required: true, mfa_token, expires_in}`, sem JWT nem cookie |
+| `POST /auth/login/totp` | `{mfa_token, code}` ou `{mfa_token, recovery_code}` | `{access_token, user, ...}` + cookie |
+
+O `mfa_token` é opaco, vale 5 minutos e só uma vez, e no banco fica só o hash. Códigos errados contam para o bloqueio da conta (REQ-03) e vão para a auditoria como `TOTP_FAILURE`. Com 3 falhas em 15 minutos, o usuário recebe um alerta `TOTP_FAILURES` na atividade de segurança.
+
 ## Log de auditoria (REQ-55 e 56)
 
 `audit.record(...)` grava na tabela `audit_log`, que só aceita inserção. São registrados login, logout, falha de autenticação, emissão de token, troca de senha, assinatura e verificação, além de outros eventos de segurança (bloqueio de conta, reuso de refresh, sessões encerradas).

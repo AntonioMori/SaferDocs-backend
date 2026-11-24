@@ -8,11 +8,12 @@ cifrado de uma conta não pode ser copiado para outra (REQ-12).
 
 import base64
 import secrets
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 
 import pyotp
 from fastapi import Request
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode, FieldError
@@ -20,7 +21,7 @@ from app.crypto import totp
 from app.crypto.aead import AeadContext, decrypt, encrypt
 from app.crypto.keyed_hash import keyed_hash
 from app.crypto.passwords import verify_password
-from app.db.models import RecoveryCode, User
+from app.db.models import AuditLog, RecoveryCode, SecurityEvent, User
 from app.schemas.twofa import TotpEnabledOut, TotpSetupOut
 from app.services import audit_service as audit
 from app.services import security_events
@@ -193,3 +194,45 @@ def regenerate_recovery_codes(db: Session, user: User, code: str, request: Reque
     )
     db.commit()
     return TotpEnabledOut(recovery_codes=codes)
+
+
+# ---------------------------------------------------------------- alerta de códigos inválidos (REQ-16)
+
+FAILURE_ALERT_THRESHOLD = 3
+FAILURE_ALERT_WINDOW = timedelta(minutes=15)
+
+
+def alert_on_repeated_failures(db: Session, user_id: uuid.UUID, request: Request) -> bool:
+    """Depois de registrar um TOTP_FAILURE: com 3 falhas em 15 min, avisa o usuário.
+
+    Um alerta por janela: enquanto houver um TOTP_FAILURES nos últimos 15 min,
+    novas falhas não geram outro. Retorna True se emitiu.
+    """
+    db.flush()  # a falha que acabou de ser registrada também conta (a sessão não usa autoflush)
+    desde = datetime.now(UTC) - FAILURE_ALERT_WINDOW
+    falhas = db.scalar(
+        select(func.count()).where(
+            AuditLog.user_id == user_id,
+            AuditLog.action == audit.AuditAction.TOTP_FAILURE,
+            AuditLog.occurred_at >= desde,
+        )
+    )
+    if falhas < FAILURE_ALERT_THRESHOLD:
+        return False
+    ja_avisado = db.scalar(
+        select(SecurityEvent.id).where(
+            SecurityEvent.user_id == user_id,
+            SecurityEvent.type == SecurityEventType.TOTP_FAILURES,
+            SecurityEvent.created_at >= desde,
+        )
+    )
+    if ja_avisado is not None:
+        return False
+    security_events.emit(
+        db,
+        user_id=user_id,
+        type=SecurityEventType.TOTP_FAILURES,
+        request=request,
+        details={"failures": falhas, "window_minutes": int(FAILURE_ALERT_WINDOW.total_seconds() // 60)},
+    )
+    return True
