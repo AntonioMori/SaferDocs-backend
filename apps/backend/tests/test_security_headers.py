@@ -80,3 +80,7 @@ def test_referrer_policy(responses):
 
 def test_permissions_policy(responses):
     assert_everywhere(responses, "permissions-policy", "camera=(), microphone=(), geolocation=()")
+
+
+def test_x_xss_protection(responses):
+    assert_everywhere(responses, "x-xss-protection", "0")
