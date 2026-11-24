@@ -206,3 +206,108 @@ def test_javascript_no_dicionario_de_um_stream():
         }
     )
     assert worker_result(pdf) == {"ok": False, "error": "HAS_JAVASCRIPT"}
+
+
+# --------------------------------------------------------------- QA caixa-preta: falha fechada
+
+
+def _sem_objeto_4_na_xref(pdf: bytes) -> bytes:
+    # O objeto 4 continua no arquivo, mas a xref o marca como livre.
+    linhas = pdf.split(b"\n")
+    xref = linhas.index(b"xref")
+    linhas[xref + 6] = b"0000000000 65535 f "
+    return b"\n".join(linhas)
+
+
+OBJETO_PERDIDO = {
+    # O qpdf corta aninhamento acima de 500 níveis: o objeto com JS vira null.
+    "aninhamento-acima-do-limite": {
+        1: b"<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>",
+        4: b"[" * 501 + b"<< /S /JavaScript /JS (x) >>" + b"]" * 501,
+    },
+    "cadeia-next-acima-do-limite": {
+        1: b"<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>",
+        4: b"<< /S /GoTo /D [3 0 R /Fit] /Next " * 600 + b"<< /S /JavaScript /JS (x) >>" + b" >>" * 600,
+    },
+    "dicionario-sem-fechar": {
+        1: b"<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>",
+        4: b"<< /S /JavaScript /JS (app.alert(1)) /Next << /S",
+    },
+    "string-sem-fechar": {
+        1: b"<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>",
+        4: b"<< /S /JavaScript /JS (app.alert(1) >>",
+    },
+}
+
+
+@pytest.mark.parametrize("nome", OBJETO_PERDIDO)
+def test_objeto_que_o_parser_perde_e_recusado_em_vez_de_passar_limpo(nome):
+    # Falha fechada: se o qpdf descartou um objeto, não dá para garantir que não havia JS.
+    resultado = worker_result(raw_pdf(OBJETO_PERDIDO[nome]))
+    assert resultado["ok"] is False, resultado
+    assert resultado["error"] in ("UNPROCESSABLE", "HAS_JAVASCRIPT")
+
+
+def test_objeto_fora_da_xref_mas_no_arquivo_e_encontrado():
+    pdf = _sem_objeto_4_na_xref(
+        raw_pdf(
+            {
+                1: b"<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>",
+                4: b"<< /S /JavaScript /JS (app.alert(1)) >>",
+            }
+        )
+    )
+    assert b"0000000000 65535 f \n" in pdf.split(b"trailer")[0].rsplit(b"xref", 1)[1]
+    assert worker_result(pdf) == {"ok": False, "error": "HAS_JAVASCRIPT"}
+
+
+def _link(uri: bytes) -> dict:
+    return {
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [4 0 R] >>",
+        4: b"<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /A << /S /URI /URI " + uri + b" >> >>",
+    }
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        b"<FEFF006A006100760061007300630072006900700074003A0078>",  # UTF-16BE com BOM
+        b"<EFBBBF6A6176617363726970743A78>",  # BOM UTF-8
+        b"(\\000javascript:x)",  # nulo antes
+    ],
+    ids=["utf16-bom", "utf8-bom", "nulo-antes"],
+)
+def test_uri_javascript_codificada_e_recusada(uri):
+    assert worker_result(raw_pdf(_link(uri))) == {"ok": False, "error": "HAS_JAVASCRIPT"}
+
+
+def test_base_javascript_no_catalogo_e_recusada():
+    pdf = raw_pdf({1: b"<< /Type /Catalog /Pages 2 0 R /URI << /Base (javascript:alert) >> >>"})
+    assert worker_result(pdf) == {"ok": False, "error": "HAS_JAVASCRIPT"}
+
+
+def test_pdf_grande_e_limpo_continua_aceito():
+    # A segunda passada (xref reconstruída) não pode recusar nem pesar no PDF normal.
+    from tests.conftest import make_pdf
+
+    pdf = make_pdf(pages=400)
+    assert worker_result(pdf)["result"]["page_count"] == 400
+
+
+def _com_avisos(monkeypatch, *avisos: str) -> None:
+    import pikepdf
+
+    original = pikepdf.Pdf.get_warnings
+    monkeypatch.setattr(pikepdf.Pdf, "get_warnings", lambda self: [*original(self), *avisos])
+
+
+def test_aviso_de_objeto_perdido_do_qpdf_recusa_o_pdf(monkeypatch):
+    # Com o limite de memória da tarefa, um object stream gigante só gera um aviso
+    # (bad_alloc) e o objeto vira null. O aviso tem que recusar, nunca passar limpo.
+    _com_avisos(monkeypatch, "(offset 291): error decoding stream data for object 10 0: std::bad_alloc")
+    assert worker_result(raw_pdf({})) == {"ok": False, "error": "UNPROCESSABLE"}
+
+
+def test_aviso_de_reparo_comum_nao_recusa(monkeypatch):
+    _com_avisos(monkeypatch, "file is damaged", "Attempting to reconstruct cross-reference table")
+    assert worker_result(raw_pdf({}))["ok"] is True
