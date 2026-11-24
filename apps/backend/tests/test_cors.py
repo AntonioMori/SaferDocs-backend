@@ -200,3 +200,47 @@ def test_origem_do_env_com_caixa_e_porta_padrao_casa_com_o_navegador(monkeypatch
     monkeypatch.setattr("app.main._settings_or_exit", lambda: settings)
     response = TestClient(create_app()).get("/api/v1/health", headers={"Origin": "https://app.example"})
     assert response.headers["access-control-allow-origin"] == "https://app.example"
+
+
+# --------------------------------------------------------------- headers repetidos (QA)
+
+
+def _raw_preflight(*extra: tuple[str, str]):
+    base = [("Origin", ALLOWED), ("Access-Control-Request-Method", "PUT")]
+    return client.options("/api/v1/auth/password", headers=base + list(extra))
+
+
+def test_request_headers_repetido_confere_todas_as_linhas():
+    response = _raw_preflight(
+        ("Access-Control-Request-Headers", "authorization"),
+        ("Access-Control-Request-Headers", "x-evil"),
+    )
+    assert response.status_code == 403
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_request_headers_repetido_so_com_permitidos_passa():
+    response = _raw_preflight(
+        ("Access-Control-Request-Headers", "authorization"),
+        ("Access-Control-Request-Headers", "content-type"),
+    )
+    assert response.status_code == 204
+
+
+def test_request_method_repetido_e_recusado():
+    response = _raw_preflight(("Access-Control-Request-Method", "PATCH"))
+    assert response.status_code == 403
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_origin_repetido_nao_recebe_cors():
+    duplicada = [("Origin", ALLOWED), ("Origin", FOREIGN)]
+    response = client.get("/api/v1/health", headers=duplicada)
+    assert response.status_code == 200
+    assert "access-control-allow-origin" not in response.headers
+    assert "access-control-allow-credentials" not in response.headers
+    preflight_dup = client.options(
+        "/api/v1/auth/password", headers=duplicada + [("Access-Control-Request-Method", "PUT")]
+    )
+    assert preflight_dup.status_code == 403
+    assert "access-control-allow-origin" not in preflight_dup.headers
