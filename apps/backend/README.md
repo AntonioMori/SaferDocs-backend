@@ -209,6 +209,7 @@ O login e o refresh devolvem `unseen_security_events`, para o front destacar os 
 
 - **Origens (REQ-31):** só as de `CORS_ALLOWED_ORIGINS`, comparadas por igualdade exata. A resposta traz `Access-Control-Allow-Origin` com a própria origem, nunca `*` (o `*` já é recusado na inicialização), e `Vary: Origin`. Origem fora da lista não recebe nenhum header CORS, e o navegador bloqueia a leitura da resposta.
 - **Preflight (REQ-35):** `OPTIONS` com `Access-Control-Request-Method` é respondida pelo próprio middleware, com 204 e sem corpo, antes de rate limit, CSRF e autenticação. A resposta traz `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods` e `Access-Control-Allow-Headers`. Preflight de origem fora da lista recebe 403 `AUTH_009`, sem nenhum header CORS.
+- **Métodos (REQ-32):** só `GET`, `POST`, `PUT`, `DELETE` e `OPTIONS`. Preflight pedindo outro método (como `PATCH`) recebe 403 `AUTH_009`, sem headers CORS.
 
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:

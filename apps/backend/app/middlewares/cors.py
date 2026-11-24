@@ -55,6 +55,10 @@ class CORSMiddleware:
     def _preflight(self, scope: Scope, origin: str) -> Response:
         if not self.is_allowed(origin):
             return self._reject(scope)
+        headers = Headers(scope=scope)
+        # REQ-32: só GET, POST, PUT, DELETE e OPTIONS (nomes de método diferenciam maiúsculas).
+        if headers["access-control-request-method"].strip() not in ALLOWED_METHODS:
+            return self._reject(scope, "Método não permitido para requisições de outra origem.")
         return Response(
             status_code=204,
             headers={

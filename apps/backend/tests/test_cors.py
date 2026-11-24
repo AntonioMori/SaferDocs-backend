@@ -84,6 +84,27 @@ def test_preflight_de_origem_fora_da_lista_e_recusada():
     assert "access-control-allow-methods" not in response.headers
 
 
+# --------------------------------------------------------------- métodos (REQ-32)
+
+
+def test_metodos_permitidos_passam_na_preflight():
+    for method in ("GET", "POST", "PUT", "DELETE", "OPTIONS"):
+        assert preflight(method=method).status_code == 204, method
+
+
+def test_patch_e_recusado_na_preflight():
+    response = preflight(method="PATCH")
+    assert response.status_code == 403
+    assert response.json()["code"] == "AUTH_009"
+    assert "access-control-allow-origin" not in response.headers
+    assert "access-control-allow-methods" not in response.headers
+
+
+def test_outros_metodos_sao_recusados_na_preflight():
+    for method in ("HEAD", "TRACE", "CONNECT", "PROPFIND", "put", ""):
+        assert preflight(method=method).status_code == 403, method
+
+
 def test_options_sem_request_method_nao_e_preflight():
     # Sem Access-Control-Request-Method, é um OPTIONS comum e vai para as rotas.
     response = client.options("/api/v1/health", headers={"Origin": ALLOWED})
