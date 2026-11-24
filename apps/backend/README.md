@@ -216,6 +216,16 @@ O login e o refresh devolvem `unseen_security_events`, para o front destacar os 
 
 Em desenvolvimento e no deploy, o front e a API ficam na mesma origem (proxy do Vite ou nginx), então o navegador nem chega a usar CORS. As regras acima valem para qualquer outra origem que tente chamar a API.
 
+## Cabeçalhos de segurança (REQ-37 a 44)
+
+`app/middlewares/security_headers.py` coloca os headers abaixo em **toda** resposta da API: sucesso, erro, rota inexistente e preflight. Os valores são fixos no código, e nenhuma variável de ambiente consegue enfraquecê-los. Ordem dos middlewares, de fora para dentro: `request_id -> security_headers -> CORS -> rotas`.
+
+| Header | Valor | Requisito |
+|---|---|---|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'` | REQ-37 |
+
+Conferir com `curl -I http://localhost:8000/api/v1/health`.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
