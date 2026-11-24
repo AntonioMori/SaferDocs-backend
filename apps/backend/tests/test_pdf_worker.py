@@ -333,3 +333,68 @@ def test_compose_api_so_conecta_no_socket():
     backend = _compose()["services"]["backend"]
     assert "pdfsock:/run/pdf:ro" in backend["volumes"]
     assert backend["group_add"] == ["10001"]
+
+
+# --------------------------------------------------------------- QA caixa-preta: BUSY e MediaBox
+
+
+def test_cliente_le_o_busy_mesmo_com_o_envio_quebrado(monkeypatch):
+    # O worker responde BUSY e fecha antes de receber o PDF inteiro: o envio dá EPIPE,
+    # mas a resposta já está no buffer e precisa ser lida (429, não 500).
+    resposta = bytearray(protocol.error("BUSY"))
+
+    class SocketQueQuebraNoEnvio:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def sendall(self, data):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def shutdown(self, how):
+            raise AssertionError("não deveria chegar aqui")
+
+        def recv(self, n):
+            pedaco = bytes(resposta[:n])
+            del resposta[:n]
+            return pedaco
+
+    monkeypatch.setattr("app.pdf.client._connect", lambda path, timeout: SocketQueQuebraNoEnvio())
+    with pytest.raises(AppError) as erro:
+        pdf_client.inspect(make_pdf())
+    assert erro.value.code == ErrorCode.RATE_LIMITED
+
+
+def _pdf_com_pagina(pagina: bytes, pages: bytes = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>") -> bytes:
+    from tests.test_pdf_javascript import raw_pdf
+
+    return raw_pdf({2: pages, 3: pagina})
+
+
+@pytest.mark.parametrize(
+    "pagina",
+    [
+        b"<< /Type /Page /Parent 2 0 R >>",  # sem MediaBox em lugar nenhum
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [/a /b /c /d] >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200] >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox << /W 200 >> >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 0 300] >>",  # área zero
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 99999 300] >>",  # maior que o PDF permite
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 true 300] >>",
+    ],
+    ids=["ausente", "nomes", "curta", "dicionario", "area-zero", "gigante", "booleano"],
+)
+def test_mediabox_invalida_e_recusada_em_vez_de_virar_612x792(pagina):
+    header, _ = _response(task.handle(_request(pdf=_pdf_com_pagina(pagina))))
+    assert header == {"ok": False, "error": "UNPROCESSABLE"}
+
+
+def test_mediabox_herdada_do_pages_e_decimal_funcionam():
+    pdf = _pdf_com_pagina(
+        b"<< /Type /Page /Parent 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [10 20 605.5 862] >>",
+    )
+    header, _ = _response(task.handle(_request(pdf=pdf)))
+    assert header["result"]["pages"] == [{"width": 595.5, "height": 842.0}]

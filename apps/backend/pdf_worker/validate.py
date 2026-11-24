@@ -116,14 +116,17 @@ def _contains_javascript(root: pikepdf.Object) -> bool:
     return False
 
 
-def _scan(document: pikepdf.Pdf) -> bool:
+def _scan(document: pikepdf.Pdf) -> tuple[bool, list[str]]:
+    """Varre o documento e devolve (achou JS?, avisos do qpdf).
+
+    O `get_warnings()` do pikepdf entrega e LIMPA os avisos: quem precisar deles
+    depois (ex.: o aviso de MediaBox reparado) usa a lista devolvida aqui.
+    """
     found = _contains_javascript(document.trailer) or any(_contains_javascript(o) for o in document.objects)
-    if found:
-        return True
-    lost = [w for w in document.get_warnings() if any(m in w.lower() for m in LOST_OBJECT_WARNINGS)]
-    if lost:
+    warnings = list(document.get_warnings())
+    if not found and any(m in w.lower() for w in warnings for m in LOST_OBJECT_WARNINGS):
         raise DamagedPdfError()
-    return False
+    return found, warnings
 
 
 def _without_startxref(pdf: bytes) -> bytes:
@@ -136,10 +139,10 @@ def _without_startxref(pdf: bytes) -> bytes:
     return pdf.replace(b"startxref", b"startxreX")
 
 
-def has_javascript(document: pikepdf.Pdf) -> bool:
+def has_javascript(document: pikepdf.Pdf) -> tuple[bool, list[str]]:
     """Procura JavaScript em todos os objetos e no trailer do documento aberto.
 
-    Levanta DamagedPdfError se o qpdf perdeu algum objeto.
+    Devolve também os avisos do qpdf até aqui. Levanta DamagedPdfError se ele perdeu algum objeto.
     """
     return _scan(document)
 
@@ -156,4 +159,4 @@ def has_javascript_in_rebuilt(pdf: bytes) -> bool:
     except (pikepdf.PdfError, pikepdf.PasswordError, ValueError, OSError):
         return False
     with rebuilt:
-        return _scan(rebuilt)
+        return _scan(rebuilt)[0]
