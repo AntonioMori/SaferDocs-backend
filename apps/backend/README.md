@@ -211,6 +211,7 @@ O login e o refresh devolvem `unseen_security_events`, para o front destacar os 
 - **Preflight (REQ-35):** `OPTIONS` com `Access-Control-Request-Method` é respondida pelo próprio middleware, com 204 e sem corpo, antes de rate limit, CSRF e autenticação. A resposta traz `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods` e `Access-Control-Allow-Headers`. Preflight de origem fora da lista recebe 403 `AUTH_009`, sem nenhum header CORS.
 - **Métodos (REQ-32):** só `GET`, `POST`, `PUT`, `DELETE` e `OPTIONS`. Preflight pedindo outro método (como `PATCH`) recebe 403 `AUTH_009`, sem headers CORS.
 - **Headers (REQ-33):** só `Authorization`, `Content-Type` e `X-Request-ID`, sem diferenciar maiúsculas. Preflight pedindo qualquer outro header também recebe 403. Por isso o CSRF (REQ-65) é verificado pelo `Origin`/`Referer`, e não por um header de token.
+- **Credenciais (REQ-34):** `Access-Control-Allow-Credentials: true` (necessário para o cookie de refresh) vai só para as origens da lista, inclusive na preflight. Origem fora da lista, ou preflight recusada, não recebe esse header. Este é o motivo da implementação própria: o `CORSMiddleware` do Starlette envia o header de credenciais para qualquer origem. As origens permitidas também podem ler `X-Request-ID` e `Retry-After` (`Access-Control-Expose-Headers`).
 
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:

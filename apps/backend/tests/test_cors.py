@@ -135,6 +135,29 @@ def test_lista_de_headers_vazia_ou_com_virgulas_sobrando_passa():
     assert preflight(headers=" , authorization ,").status_code == 204
 
 
+# --------------------------------------------------------------- credenciais (REQ-34)
+
+
+def test_origem_confiavel_recebe_credenciais():
+    response = client.get("/api/v1/health", headers={"Origin": ALLOWED})
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert response.headers["access-control-expose-headers"] == "X-Request-ID, Retry-After"
+    assert preflight().headers["access-control-allow-credentials"] == "true"
+
+
+def test_origem_nao_confiavel_nao_recebe_credenciais():
+    response = client.get("/api/v1/health", headers={"Origin": FOREIGN})
+    assert "access-control-allow-credentials" not in response.headers
+    assert "access-control-expose-headers" not in response.headers
+    assert "access-control-allow-credentials" not in preflight(origin=FOREIGN).headers
+
+
+def test_preflight_recusada_nao_recebe_credenciais():
+    for response in (preflight(method="PATCH"), preflight(headers="x-csrf-token")):
+        assert response.status_code == 403
+        assert "access-control-allow-credentials" not in response.headers
+
+
 def test_options_sem_request_method_nao_e_preflight():
     # Sem Access-Control-Request-Method, é um OPTIONS comum e vai para as rotas.
     response = client.options("/api/v1/health", headers={"Origin": ALLOWED})
