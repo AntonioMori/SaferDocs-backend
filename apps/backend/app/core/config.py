@@ -11,6 +11,7 @@ variáveis estão erradas, sem nunca imprimir o valor delas.
 
 import base64
 import binascii
+import ipaddress
 import re
 from functools import lru_cache
 from typing import Annotated, Literal
@@ -35,41 +36,69 @@ def _decode_b64(value: str, name: str) -> bytes:
         raise ValueError(f"{name} precisa estar em base64") from None
 
 
-def _check_origin(origin: str) -> None:
+DEFAULT_PORTS = {"http": 80, "https": 443}
+_HOST_CHARS = re.compile(r"^[a-z0-9._-]+$")
+_NUMERIC_HOST = re.compile(r"^[0-9.]+$")
+
+
+def _invalid(origin: str, motivo: str = "use esquema://host[:porta]") -> ValueError:
+    return ValueError(f"origem inválida: {origin!r} ({motivo})")
+
+
+def _canonical_host(origin: str, hostname: str) -> str:
+    """Host como o navegador escreve no `Origin`: punycode, IP canônico, minúsculas."""
+    if ":" in hostname:  # IPv6
+        try:
+            return f"[{ipaddress.IPv6Address(hostname).compressed}]"
+        except ValueError:
+            raise _invalid(origin, "IPv6 inválido") from None
+    if _NUMERIC_HOST.match(hostname):
+        # O navegador reescreve atalhos como 127.1; exigimos a forma completa.
+        try:
+            return str(ipaddress.IPv4Address(hostname))
+        except ValueError:
+            raise _invalid(origin, "IPv4 inválido") from None
+    try:
+        host = hostname.encode("idna").decode("ascii").lower()  # bücher -> xn--bcher-kva
+    except UnicodeError:
+        raise _invalid(origin, "host inválido") from None
+    if not _HOST_CHARS.match(host):
+        raise _invalid(origin, "host inválido")
+    return host
+
+
+def _normalize_origin(origin: str) -> str:
+    """Valida a origem e a deixa no formato que o navegador envia no header `Origin`.
+
+    Esquema e host em minúsculas, host internacional em punycode, IP na forma
+    canônica, sem barra no fim e sem a porta padrão do esquema. Assim
+    `https://App.ts.net:443/` do `.env` casa com o `https://app.ts.net` que o
+    navegador manda (a comparação do CORS é exata). Origem que nenhum navegador
+    enviaria é recusada na inicialização, em vez de falhar em silêncio depois.
+    """
     if origin == "*":
         raise ValueError("'*' não é permitido; liste as origens explicitamente")
+    if any(c.isspace() for c in origin):
+        raise _invalid(origin)
     parts = urlsplit(origin)
+    scheme = parts.scheme  # urlsplit já devolve o esquema em minúsculas
     if (
-        parts.scheme.lower() not in ("http", "https")
+        scheme not in DEFAULT_PORTS
         or not parts.hostname
         or parts.path not in ("", "/")
         or parts.query
         or parts.fragment
         or "@" in parts.netloc
+        or parts.netloc.endswith(":")
     ):
-        raise ValueError(f"origem inválida: {origin!r} (use esquema://host[:porta])")
-
-
-DEFAULT_PORTS = {"http": 80, "https": 443}
-
-
-def _normalize_origin(origin: str) -> str:
-    """Deixa a origem no formato que o navegador envia no header `Origin`.
-
-    Esquema e host em minúsculas, sem barra no fim e sem a porta padrão do
-    esquema. Assim `https://App.ts.net:443/` do `.env` casa com o
-    `https://app.ts.net` que o navegador manda (a comparação do CORS é exata).
-    """
-    _check_origin(origin)
-    parts = urlsplit(origin)
-    scheme = parts.scheme.lower()
-    host = parts.hostname or ""  # urlsplit já devolve o hostname em minúsculas
-    if ":" in host:  # IPv6
-        host = f"[{host}]"
+        raise _invalid(origin)
+    host = _canonical_host(origin, parts.hostname)
     try:
         port = parts.port
     except ValueError:
-        raise ValueError(f"origem inválida: {origin!r} (porta inválida)") from None
+        raise _invalid(origin, "porta inválida") from None
+    if port == 0:
+        raise _invalid(origin, "porta inválida")
     if port is None or port == DEFAULT_PORTS[scheme]:
         return f"{scheme}://{host}"
     return f"{scheme}://{host}:{port}"
@@ -133,7 +162,8 @@ class Settings(BaseSettings):
     def _validate_origins(cls, value: list[str]) -> list[str]:
         if not value:
             raise ValueError("informe ao menos uma origem")
-        return [_normalize_origin(origin) for origin in value]
+        # dict.fromkeys tira as repetidas que só aparecem depois de normalizar, mantendo a ordem.
+        return list(dict.fromkeys(_normalize_origin(origin) for origin in value))
 
     @field_validator("database_url")
     @classmethod

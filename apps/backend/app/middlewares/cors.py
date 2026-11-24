@@ -28,6 +28,21 @@ ALLOWED_HEADERS = ("Authorization", "Content-Type", "X-Request-ID")
 _ALLOWED_HEADERS_LOWER = frozenset(h.lower() for h in ALLOWED_HEADERS)
 # Headers da resposta que o JavaScript da origem permitida pode ler.
 EXPOSED_HEADERS = ("X-Request-ID", "Retry-After")
+_CORS_RESPONSE_HEADERS = (
+    "Access-Control-Allow-Origin",
+    "Access-Control-Allow-Credentials",
+    "Access-Control-Expose-Headers",
+    "Access-Control-Allow-Methods",
+    "Access-Control-Allow-Headers",
+    "Access-Control-Max-Age",
+)
+
+
+def _add_vary_origin(headers: MutableHeaders) -> None:
+    """Acrescenta `Origin` ao `Vary`, preservando o que já existe e sem repetir."""
+    present = {v.strip().lower() for v in ",".join(headers.getlist("vary")).split(",")}
+    if "origin" not in present and "*" not in present:
+        headers.add_vary_header("Origin")
 
 
 class CORSMiddleware:
@@ -102,8 +117,12 @@ class CORSMiddleware:
         async def wrapped(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
+                # Só este middleware decide CORS: o que uma rota tenha posto (ex.: `*`) é descartado,
+                # para nunca vazar para origem estranha nem para requisição sem Origin.
+                for name in _CORS_RESPONSE_HEADERS:
+                    del headers[name]
                 # A resposta muda conforme a origem: caches não podem reaproveitá-la para outra.
-                headers.add_vary_header("Origin")
+                _add_vary_origin(headers)
                 if allowed:
                     headers["Access-Control-Allow-Origin"] = origin
                     # REQ-34: credenciais (cookie de refresh) só para origens confiáveis.
