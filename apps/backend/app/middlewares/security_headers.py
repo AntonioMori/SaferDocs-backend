@@ -16,6 +16,8 @@ SECURITY_HEADERS: dict[str, str] = {
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'"
     ),
+    # REQ-38: força HTTPS por 2 anos, também nos subdomínios, sem rebaixamento para HTTP.
+    "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
 }
 
 

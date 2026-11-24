@@ -60,3 +60,7 @@ def test_content_security_policy(responses):
         "content-security-policy",
         "default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'",
     )
+
+
+def test_strict_transport_security(responses):
+    assert_everywhere(responses, "strict-transport-security", "max-age=63072000; includeSubDomains; preload")
