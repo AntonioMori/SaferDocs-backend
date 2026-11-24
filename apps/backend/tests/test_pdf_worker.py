@@ -283,3 +283,53 @@ def test_pdf_acima_do_maximo_de_paginas_e_unprocessable():
 
     header, _ = _response(task.handle(_request(pdf=make_pdf(pages=MAX_PAGES + 1))))
     assert header == {"ok": False, "error": "UNPROCESSABLE"}
+
+
+# --------------------------------------------------------------- QA caixa-branca (bloco PDF)
+
+
+def test_worker_ocupado_vira_429_com_retry_after(monkeypatch):
+    _worker_respondendo(monkeypatch, protocol.error("BUSY"))
+    with pytest.raises(AppError) as erro:
+        pdf_client.inspect(make_pdf())
+    assert erro.value.code == ErrorCode.RATE_LIMITED
+    assert erro.value.headers == {"Retry-After": str(pdf_client.BUSY_RETRY_AFTER_SECONDS)}
+
+
+def test_memoria_estourada_no_parser_e_unprocessable(monkeypatch):
+    # README e client prometem DOC_004 para PDF que estoura memória, não 500.
+    def explode(pdf, args):
+        raise MemoryError
+
+    monkeypatch.setitem(task.run.__globals__["OPERATIONS"], "inspect", explode)
+    assert _response(task.handle(_request(pdf=make_pdf())))[0] == {"ok": False, "error": "UNPROCESSABLE"}
+
+
+# --------------------------------------------------------------- critério do REQ-62 na configuração
+
+
+def _compose() -> dict:
+    import yaml
+
+    return yaml.safe_load((BACKEND.parent.parent / "docker-compose.yml").read_text(encoding="utf-8"))
+
+
+def test_compose_isola_o_pdf_worker():
+    worker = _compose()["services"]["pdf-worker"]
+    assert worker["network_mode"] == "none"  # sem rede
+    assert worker["read_only"] is True
+    assert worker["cap_drop"] == ["ALL"]
+    assert "no-new-privileges:true" in worker["security_opt"]
+    assert worker["user"] == "10001:10001"
+    assert worker["init"] is True
+    assert worker["mem_limit"] and worker["pids_limit"] and worker["cpus"]
+    # Sem segredos: não lê o .env nem recebe variáveis.
+    assert "env_file" not in worker
+    assert "environment" not in worker
+    assert worker["volumes"] == ["pdfsock:/run/pdf"]
+
+
+def test_compose_api_so_conecta_no_socket():
+    backend = _compose()["services"]["backend"]
+    assert "pdfsock:/run/pdf:ro" in backend["volumes"]
+    assert backend["group_add"] == ["10001"]
