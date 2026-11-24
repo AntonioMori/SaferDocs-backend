@@ -31,9 +31,10 @@ EXPOSED_HEADERS = ("X-Request-ID", "Retry-After")
 
 
 class CORSMiddleware:
-    def __init__(self, app: ASGIApp, *, allowed_origins: Iterable[str]) -> None:
+    def __init__(self, app: ASGIApp, *, allowed_origins: Iterable[str], max_age: int) -> None:
         self.app = app
         self.allowed_origins = frozenset(allowed_origins)
+        self.max_age = max_age
 
     def is_allowed(self, origin: str) -> bool:
         return origin in self.allowed_origins
@@ -74,6 +75,8 @@ class CORSMiddleware:
                 "Access-Control-Allow-Credentials": "true",
                 "Access-Control-Allow-Methods": ", ".join(ALLOWED_METHODS),
                 "Access-Control-Allow-Headers": ", ".join(ALLOWED_HEADERS),
+                # REQ-36: o navegador guarda esta resposta e não repete a preflight nesse intervalo.
+                "Access-Control-Max-Age": str(self.max_age),
                 "Vary": "Origin",
             },
         )
