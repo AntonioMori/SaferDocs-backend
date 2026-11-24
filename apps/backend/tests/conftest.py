@@ -90,6 +90,56 @@ def session_token(user_id, *, user_agent: str = "testclient", ip: str = "testcli
     return token
 
 
+def make_pdf(pages: int = 1, size: tuple[float, float] = (595, 842)) -> bytes:
+    """PDF válido de verdade, gerado com o pikepdf (dependência só de teste)."""
+    import io
+
+    import pikepdf
+
+    document = pikepdf.new()
+    for _ in range(pages):
+        document.add_blank_page(page_size=size)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+@pytest.fixture
+def fake_pdf_worker(monkeypatch):
+    """Troca o socket Unix do pdf-worker por um par de sockets em memória.
+
+    Do outro lado roda o código real do worker (`pdf_worker.task.handle`), no
+    mesmo processo. Funciona no Windows, que não tem AF_UNIX. O isolamento de
+    verdade (container sem rede) é testado no Docker. Devolve a lista de
+    pedidos recebidos, para os testes conferirem o que a API mandou.
+    """
+    import socket
+    import threading
+
+    from pdf_worker import task
+
+    pedidos: list[bytes] = []
+
+    def connect(path: str, timeout: float) -> socket.socket:
+        api_side, worker_side = socket.socketpair()
+        api_side.settimeout(timeout)
+
+        def serve() -> None:
+            with worker_side:
+                chunks = []
+                while chunk := worker_side.recv(1024 * 1024):
+                    chunks.append(chunk)
+                pedido = b"".join(chunks)
+                pedidos.append(pedido)
+                worker_side.sendall(task.handle(pedido))
+
+        threading.Thread(target=serve, daemon=True).start()
+        return api_side
+
+    monkeypatch.setattr("app.pdf.client._connect", connect)
+    return pedidos
+
+
 @pytest.fixture(scope="session")
 def migrated_db(database_available) -> None:
     """Banco de teste com todas as migrations aplicadas (RNF-09)."""

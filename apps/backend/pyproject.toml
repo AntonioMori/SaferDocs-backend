@@ -21,6 +21,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "pikepdf==10.18.2",
     "pytest>=9.2.0",
     "ruff>=0.17.6",
 ]
@@ -44,7 +45,7 @@ ignore = ["S101"]
 "tests/**" = ["S105", "S106"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app", "tests"]
+known-first-party = ["app", "pdf_worker", "tests"]
 known-third-party = ["alembic"]
 
 [tool.pytest.ini_options]

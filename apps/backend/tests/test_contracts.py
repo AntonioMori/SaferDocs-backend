@@ -22,7 +22,7 @@ from app.main import create_app
 from app.middlewares import rate_limit
 from app.pdf import client as pdf_client
 from app.services import audit_service, security_events, token_service, user_keys
-from tests.conftest import session_token
+from tests.conftest import make_pdf, session_token
 
 TABELAS = {
     "users",
@@ -145,7 +145,7 @@ def test_assinaturas_combinadas():
     assert _parametros(pdf_client.verify) == ["pdf"]
 
 
-def test_stubs_podem_ser_chamados(usuario):
+def test_stubs_podem_ser_chamados(usuario, fake_pdf_worker):
     request = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
     with get_sessionmaker()() as db:
         emitidos = token_service.issue_tokens(db, usuario, request, Response())
@@ -163,8 +163,8 @@ def test_stubs_podem_ser_chamados(usuario):
         user_keys.generate_user_keys(db, usuario)
     rate_limit.check_rate_limit("login-account", "ana@teste.dev", "5/minute")
     rate_limit.limit_by_ip("verify", "10/minute")(request)
-    preparado = pdf_client.prepare_sign(
-        b"%PDF-1.7", page=1, x=10, y=10, seal_lines=["x"], signer_cert_pem=b""
-    )
+    # O cliente do PDF já fala com o worker de verdade (REQ-62): aqui, o worker em memória.
+    pdf = make_pdf()
+    preparado = pdf_client.prepare_sign(pdf, page=1, x=10, y=10, seal_lines=["x"], signer_cert_pem=b"")
     assert pdf_client.finish_sign(preparado.prepared_pdf, b"cms").startswith(b"%PDF")
-    assert pdf_client.verify(b"%PDF-1.7").has_signature is False
+    assert pdf_client.verify(pdf).has_signature is False

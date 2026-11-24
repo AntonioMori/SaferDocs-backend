@@ -243,6 +243,21 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
 
 - **Leitura do upload (REQ-61):** `app/pdf/upload.py` lê o `multipart/form-data` em streaming, direto da conexão e só em memória. O `UploadFile` do FastAPI não é usado porque grava em arquivo temporário todo upload acima de 1 MB, e o PDF não pode ir para o disco (seção 9.2). Um `Content-Length` acima de `MAX_UPLOAD_MB` é recusado sem ler o corpo. Sem `Content-Length`, ou com um valor falso, a leitura para no primeiro byte acima do limite. Os dois casos dão 413 `DOC_002`. O formato é fechado: um único arquivo no campo `file` e só os campos de texto que a rota declarar, cada um com no máximo 256 bytes e uma vez só. As rotas usam a dependência `pdf_upload_with("page", "x", "y")`.
 - **Magic number (REQ-60):** o arquivo precisa começar exatamente com `%PDF-`. A conferência é feita assim que chegam os 5 primeiros bytes, mesmo divididos entre pedaços da rede. Um executável renomeado para `.pdf` é recusado com 400 `DOC_001` depois de ler só o primeiro pedaço. O nome do arquivo e o `Content-Type` da parte são ignorados, porque o cliente controla os dois.
+- **Processamento isolado (REQ-62):** todo parsing de PDF acontece no `pdf-worker` (`pdf_worker/`), um container separado. A API nem tem uma biblioteca de PDF instalada: o `pikepdf` existe só na imagem do worker e nos testes. As duas imagens conversam por um socket Unix no volume `pdfsock`, usando o protocolo de `pdf_worker/protocol.py`, com timeout de `PDF_WORKER_TIMEOUT_SECONDS`.
+
+  | Camada | Proteção |
+  |---|---|
+  | Container (`docker-compose.yml`) | `network_mode: none` (só `lo`), raiz `read_only`, `cap_drop: ALL`, `no-new-privileges`, usuário 10001, `mem_limit` 512 MB, `cpus` 1, `pids_limit` 64. Não usa o `.env`, então não há nenhum segredo no ambiente |
+  | Socket | Modo `0660`, dono e grupo 10001, diretório `0750`. A API entra no grupo (`group_add`) e monta o volume só leitura. Outro container sem o grupo não consegue conectar |
+  | Pedido | O servidor confere os tamanhos declarados antes de alocar (cabeçalho até 512 KB, corpo até 128 MB) e recusa lixo com `BAD_REQUEST` |
+  | Tarefa | Cada pedido roda num processo novo (`python -m pdf_worker.task`) com tempo de CPU e de relógio de 25 s, memória de 768 MB, `RLIMIT_FSIZE` 0 (não grava nenhum byte em arquivo), até 32 descritores e sem core dump. Se o parser travar ou cair com um PDF malicioso, morre só esse processo (`TIMEOUT` ou `UNPROCESSABLE`) |
+
+  Hoje o worker tem a operação `inspect`, que abre o PDF e devolve as páginas e seus tamanhos. `prepare_sign`, `finish_sign` e `verify` já passam pelo `inspect` no worker e ganham a lógica real com o REQ-46 e o REQ-50. Erros viram `DOC_004` (PDF corrompido, com senha ou que estoura tempo ou memória), `DOC_003` (JavaScript) e `DOC_005` (posição do selo). Com o worker fora do ar, a resposta é 500 `SYS_001`.
+
+  O Windows não tem socket Unix, então a API que usa o worker roda pelo `docker compose`. Nos testes, a fixture `fake_pdf_worker` liga o cliente ao código real do worker por um par de sockets em memória. Os testes do servidor, que dependem de Linux (socket Unix e limites do sistema), rodam num container com o mesmo isolamento:
+  ```bash
+  docker compose --profile test run --rm worker-tests
+  ```
 
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:

@@ -34,8 +34,60 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      pdf-worker:
+        condition: service_started
+    # Grupo do pdf-worker: dá acesso ao socket dele, e a nada mais (REQ-62).
+    group_add: ["10001"]
     volumes:
       - ./apps/backend/app:/app/app # hot-reload em desenvolvimento
+      - pdfsock:/run/pdf:ro # a API só conecta no socket; não grava nada ali
+
+  # ---------------------------------------------------------------------------
+  # Processamento isolado de PDF (REQ-62): todo parsing acontece aqui.
+  # Sem rede, raiz só leitura, sem capabilities, usuário sem privilégios,
+  # limites de memória/CPU/processos e nenhuma variável de ambiente com segredo
+  # (não usa o .env). A única porta de entrada é o socket Unix no volume pdfsock.
+  # ---------------------------------------------------------------------------
+  pdf-worker:
+    build:
+      context: ./apps/backend
+      dockerfile: pdf_worker/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "10001:10001"
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+    volumes:
+      - pdfsock:/run/pdf
+
+  # ---------------------------------------------------------------------------
+  # Testes do servidor do pdf-worker, que só rodam no Linux (socket Unix e
+  # limites do sistema). Mesmo isolamento do worker.
+  #   docker compose --profile test run --rm worker-tests
+  # ---------------------------------------------------------------------------
+  worker-tests:
+    profiles: ["test"]
+    build:
+      context: ./apps/backend
+      dockerfile: pdf_worker/Dockerfile
+      target: test
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      PYTHONPATH: /src
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - ./apps/backend:/src:ro
 
   # ---------------------------------------------------------------------------
   # Banco descartável para os testes automatizados
@@ -60,3 +112,4 @@ services:
 
 volumes:
   postgres_data:
+  pdfsock: # só o socket do pdf-worker; nenhum PDF é gravado aqui

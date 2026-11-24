@@ -1,0 +1,3 @@
+# Dependências da imagem do pdf-worker (REQ-62). Versões fixas: é a biblioteca
+# que lê PDFs vindos de fora, a superfície de ataque do sistema (REQ-66).
+pikepdf==10.18.2
