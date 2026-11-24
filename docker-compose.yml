@@ -54,6 +54,7 @@ services:
       dockerfile: pdf_worker/Dockerfile
       target: runtime
     restart: unless-stopped
+    init: true # recolhe processos órfãos das tarefas (o servidor Python não é um init)
     network_mode: none
     read_only: true
     cap_drop: [ALL]

@@ -13,6 +13,7 @@ from pdf_worker.ops import OpError, run
 from pdf_worker.protocol import (
     ERR_BAD_REQUEST,
     ERR_INTERNAL,
+    ERR_UNPROCESSABLE,
     ProtocolError,
     decode,
     encode,
@@ -33,6 +34,9 @@ def handle(raw_request: bytes) -> bytes:
         return encode(response, body)
     except OpError as exc:
         return error(exc.code)
+    except MemoryError:
+        # Bateu no limite de memória da tarefa (RLIMIT_AS): o PDF é pesado demais para processar.
+        return error(ERR_UNPROCESSABLE)
     except Exception:  # noqa: BLE001 - qualquer outra falha vira INTERNAL, sem detalhes do PDF
         return error(ERR_INTERNAL)
 
