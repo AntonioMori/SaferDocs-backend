@@ -1,0 +1,156 @@
+"""Servidor do pdf-worker: `python -m pdf_worker.server` (só Linux).
+
+Escuta um socket Unix no volume compartilhado com a API. Para cada pedido:
+
+1. lê a mensagem inteira, com limite de tamanho e de tempo;
+2. cria um processo novo (`pdf_worker.task`) com limites do sistema:
+   tempo de CPU, memória, nenhum arquivo gravado e poucos descritores;
+3. devolve a resposta dele. Se o processo estourar o tempo é morto
+   (`TIMEOUT`); se morrer sozinho, a resposta é `UNPROCESSABLE`.
+
+O isolamento de rede, de segredos e do sistema de arquivos vem do container
+(ver `docker-compose.yml`): sem rede, raiz só leitura, sem capabilities e
+sem nenhuma variável de ambiente com segredo.
+"""
+
+import asyncio
+import contextlib
+import logging
+import math
+import os
+import resource
+import signal
+import stat
+import subprocess
+import sys
+from functools import partial
+
+from pdf_worker.protocol import (
+    ERR_BAD_REQUEST,
+    ERR_INTERNAL,
+    ERR_TIMEOUT,
+    ERR_UNPROCESSABLE,
+    MAGIC,
+    MAX_BODY_BYTES,
+    MAX_HEADER_BYTES,
+    ProtocolError,
+    decode,
+    error,
+    reader_from_bytes,
+)
+
+logger = logging.getLogger("pdf_worker")
+
+SOCKET_PATH = os.environ.get("PDF_WORKER_SOCKET", "/run/pdf/worker.sock")
+TASK_TIMEOUT_SECONDS = 25  # abaixo do PDF_WORKER_TIMEOUT_SECONDS da API (30)
+READ_TIMEOUT_SECONDS = 30
+MAX_CONCURRENT_TASKS = 2
+TASK_MEMORY_BYTES = 768 * 1024 * 1024
+TASK_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def _limit_task() -> None:
+    """Roda no processo filho, antes do Python da tarefa começar."""
+    cpu_seconds = max(1, math.ceil(TASK_TIMEOUT_SECONDS))  # setrlimit só aceita inteiros
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+    resource.setrlimit(resource.RLIMIT_AS, (TASK_MEMORY_BYTES, TASK_MEMORY_BYTES))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))  # não grava arquivo nenhum
+    resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # sem core dump com o conteúdo do PDF
+
+
+async def _read_request(reader: asyncio.StreamReader) -> bytes:
+    """Lê uma mensagem inteira conferindo os tamanhos declarados antes de alocar."""
+    raw = bytearray(await reader.readexactly(len(MAGIC) + 4))
+    if raw[: len(MAGIC)] != MAGIC:
+        raise ProtocolError("formato desconhecido")
+    header_len = int.from_bytes(raw[len(MAGIC) :], "big")
+    if header_len > MAX_HEADER_BYTES:
+        raise ProtocolError("cabeçalho grande demais")
+    raw += await reader.readexactly(header_len + 8)
+    body_len = int.from_bytes(raw[-8:], "big")
+    if body_len > MAX_BODY_BYTES:
+        raise ProtocolError("corpo grande demais")
+    raw += await reader.readexactly(body_len)
+    decode(reader_from_bytes(bytes(raw)))  # confere o formato antes de gastar um processo
+    return bytes(raw)
+
+
+async def _run_task(raw_request: bytes) -> bytes:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-E",
+            "-s",
+            "-m",
+            "pdf_worker.task",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=TASK_ENV,
+            preexec_fn=_limit_task,  # noqa: PLW1509 - processo de um único pedido, sem threads no filho
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Sem processo não há isolamento: nunca processar o PDF aqui no servidor.
+        logger.exception("não foi possível criar o processo da tarefa")
+        return error(ERR_INTERNAL)
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(raw_request), TASK_TIMEOUT_SECONDS)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        await process.wait()
+        logger.warning("tarefa encerrada por tempo")
+        return error(ERR_TIMEOUT)
+    if process.returncode != 0:
+        logger.warning("tarefa terminou com código %s", process.returncode)
+        return error(ERR_UNPROCESSABLE)
+    try:
+        decode(reader_from_bytes(output))
+    except ProtocolError:
+        return error(ERR_UNPROCESSABLE)
+    return output
+
+
+async def _handle(
+    semaphore: asyncio.Semaphore, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
+    try:
+        try:
+            raw_request = await asyncio.wait_for(_read_request(reader), READ_TIMEOUT_SECONDS)
+        except (ProtocolError, asyncio.IncompleteReadError, TimeoutError):
+            writer.write(error(ERR_BAD_REQUEST))
+            return
+        async with semaphore:
+            try:
+                response = await _run_task(raw_request)
+            except Exception:  # noqa: BLE001 - a API sempre recebe uma resposta no formato
+                logger.exception("falha inesperada no servidor do worker")
+                response = error(ERR_INTERNAL)
+        writer.write(response)
+    finally:
+        with contextlib.suppress(ConnectionError):
+            await writer.drain()
+        writer.close()
+
+
+async def serve() -> None:
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(SOCKET_PATH)
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+    server = await asyncio.start_unix_server(partial(_handle, semaphore), path=SOCKET_PATH)
+    # Só o dono (worker) e o grupo compartilhado com a API conseguem conectar.
+    os.chmod(SOCKET_PATH, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP)
+    logger.info("pdf-worker ouvindo em %s", SOCKET_PATH)
+    async with server:
+        await server.serve_forever()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    asyncio.run(serve())
+
+
+if __name__ == "__main__":
+    main()
