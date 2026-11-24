@@ -18,7 +18,13 @@ worker viram AppError:
   ErrorCode.DOC_UNPROCESSABLE (400);
 - JavaScript embutido: ErrorCode.DOC_HAS_JAVASCRIPT (400, REQ-63);
 - posição do selo fora da página: ErrorCode.DOC_INVALID_POSITION (400);
+- worker ocupado (todas as vagas em uso além do prazo da fila):
+  ErrorCode.RATE_LIMITED (429) com `Retry-After`;
 - worker fora do ar ou resposta inválida: ErrorCode.INTERNAL (500).
+
+As funções são síncronas (socket bloqueante, até PDF_WORKER_TIMEOUT_SECONDS).
+Numa rota `async def`, chame com `await run_in_threadpool(inspect, pdf)` para
+não travar o event loop; numa rota `def` o FastAPI já usa o threadpool.
 
 `prepare_sign`, `finish_sign` e `verify` ainda são stubs depois do `inspect`;
 a implementação real entra com o REQ-46 e o REQ-50 (dono: v1ct0rjoao).
@@ -34,6 +40,8 @@ from app.core.errors import AppError, ErrorCode
 from pdf_worker import protocol
 
 logger = logging.getLogger("saferdocs.pdf")
+
+BUSY_RETRY_AFTER_SECONDS = 5
 
 _WORKER_ERRORS = {
     protocol.ERR_UNPROCESSABLE: ErrorCode.DOC_UNPROCESSABLE,
@@ -99,6 +107,8 @@ def _call(op: str, args: dict[str, Any], pdf: bytes) -> tuple[dict[str, Any], by
 
     if header.get("ok") is True and isinstance(header.get("result"), dict):
         return header["result"], body
+    if header.get("error") == protocol.ERR_BUSY:
+        raise AppError(ErrorCode.RATE_LIMITED, headers={"Retry-After": str(BUSY_RETRY_AFTER_SECONDS)})
     code = _WORKER_ERRORS.get(header.get("error"))  # type: ignore[arg-type]
     if code is None:
         logger.error("pdf-worker devolveu erro %r em %s", header.get("error"), op)

@@ -15,6 +15,7 @@ sem nenhuma variável de ambiente com segredo.
 
 import asyncio
 import contextlib
+import json
 import logging
 import math
 import os
@@ -27,6 +28,7 @@ from functools import partial
 
 from pdf_worker.protocol import (
     ERR_BAD_REQUEST,
+    ERR_BUSY,
     ERR_INTERNAL,
     ERR_TIMEOUT,
     ERR_UNPROCESSABLE,
@@ -42,10 +44,17 @@ from pdf_worker.protocol import (
 logger = logging.getLogger("pdf_worker")
 
 SOCKET_PATH = os.environ.get("PDF_WORKER_SOCKET", "/run/pdf/worker.sock")
-TASK_TIMEOUT_SECONDS = 25  # abaixo do PDF_WORKER_TIMEOUT_SECONDS da API (30)
-READ_TIMEOUT_SECONDS = 30
+# Orçamento de tempo de um pedido: fila + leitura + tarefa = 25 s, abaixo do
+# PDF_WORKER_TIMEOUT_SECONDS da API (30). Assim a API recebe sempre uma resposta
+# do worker (BUSY, TIMEOUT...) em vez de estourar o próprio timeout.
+QUEUE_TIMEOUT_SECONDS = 5
+READ_TIMEOUT_SECONDS = 5
+TASK_TIMEOUT_SECONDS = 15
+# Orçamento de memória (mem_limit 512m no compose): no máximo MAX_CONCURRENT_TASKS
+# pedidos em memória no servidor (até 2 x o PDF cada) + as tarefas. Medido: um
+# inspect de 20 MB chega a ~110 MB de memória virtual.
 MAX_CONCURRENT_TASKS = 2
-TASK_MEMORY_BYTES = 768 * 1024 * 1024
+TASK_MEMORY_BYTES = 256 * 1024 * 1024
 TASK_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
 
 
@@ -57,6 +66,9 @@ def _limit_task() -> None:
     resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))  # não grava arquivo nenhum
     resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # sem core dump com o conteúdo do PDF
+    # Não cria processos nem threads: um exploit no parser não sobrevive ao fim da tarefa
+    # (fork + setsid escaparia do killpg) nem deixa um processo escutando no socket.
+    resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
 
 
 async def _read_request(reader: asyncio.StreamReader) -> bytes:
@@ -71,9 +83,15 @@ async def _read_request(reader: asyncio.StreamReader) -> bytes:
     body_len = int.from_bytes(raw[-8:], "big")
     if body_len > MAX_BODY_BYTES:
         raise ProtocolError("corpo grande demais")
+    # Confere o cabeçalho antes de gastar um processo, sem copiar o corpo.
+    try:
+        header = json.loads(raw[len(MAGIC) + 4 : len(MAGIC) + 4 + header_len])
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ProtocolError("cabeçalho inválido") from None
+    if not isinstance(header, dict):
+        raise ProtocolError("cabeçalho inválido")
     raw += await reader.readexactly(body_len)
-    decode(reader_from_bytes(bytes(raw)))  # confere o formato antes de gastar um processo
-    return bytes(raw)
+    return bytes(raw)  # a única cópia do PDF no servidor
 
 
 async def _run_task(raw_request: bytes) -> bytes:
@@ -117,18 +135,28 @@ async def _handle(
     semaphore: asyncio.Semaphore, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
     try:
+        # A vaga é pega ANTES de ler: no máximo MAX_CONCURRENT_TASKS PDFs em memória.
+        # Quem espera demais recebe BUSY (a API responde 429 com Retry-After).
         try:
-            raw_request = await asyncio.wait_for(_read_request(reader), READ_TIMEOUT_SECONDS)
-        except (ProtocolError, asyncio.IncompleteReadError, TimeoutError):
-            writer.write(error(ERR_BAD_REQUEST))
+            await asyncio.wait_for(semaphore.acquire(), QUEUE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            writer.write(error(ERR_BUSY))
             return
-        async with semaphore:
+        try:
+            try:
+                raw_request = await asyncio.wait_for(_read_request(reader), READ_TIMEOUT_SECONDS)
+            except (ProtocolError, asyncio.IncompleteReadError, TimeoutError):
+                writer.write(error(ERR_BAD_REQUEST))
+                return
             try:
                 response = await _run_task(raw_request)
             except Exception:  # noqa: BLE001 - a API sempre recebe uma resposta no formato
                 logger.exception("falha inesperada no servidor do worker")
                 response = error(ERR_INTERNAL)
-        writer.write(response)
+            del raw_request
+            writer.write(response)
+        finally:
+            semaphore.release()
     finally:
         with contextlib.suppress(ConnectionError):
             await writer.drain()
