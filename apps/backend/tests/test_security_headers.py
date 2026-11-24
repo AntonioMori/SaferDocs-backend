@@ -84,3 +84,39 @@ def test_permissions_policy(responses):
 
 def test_x_xss_protection(responses):
     assert_everywhere(responses, "x-xss-protection", "0")
+
+
+def test_cache_control_no_store(responses):
+    assert_everywhere(responses, "cache-control", "no-store")
+
+
+def test_cache_control_nas_rotas_autenticadas_e_de_auth():
+    rotas = [
+        ("GET", "/api/v1/auth/me"),
+        ("GET", "/api/v1/sessions"),
+        ("GET", "/api/v1/security/events"),
+        ("POST", "/api/v1/auth/refresh"),
+        ("POST", "/api/v1/auth/logout"),
+    ]
+    for method, path in rotas:
+        response = client.request(method, path)
+        assert response.headers["cache-control"] == "no-store", path
+
+
+def test_resposta_binaria_de_pdf_tambem_recebe_os_headers():
+    # REQ-40/43: o download do PDF assinado precisa de nosniff e no-store.
+    from starlette.applications import Starlette
+    from starlette.responses import Response
+    from starlette.routing import Route
+
+    from app.middlewares.security_headers import SecurityHeadersMiddleware
+
+    def pdf(_request):
+        return Response(b"%PDF-1.7\n", media_type="application/pdf")
+
+    pdf_app = Starlette(routes=[Route("/pdf", pdf)])
+    pdf_app.add_middleware(SecurityHeadersMiddleware)
+    response = TestClient(pdf_app).get("/pdf")
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
