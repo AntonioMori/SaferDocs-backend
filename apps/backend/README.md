@@ -224,6 +224,7 @@ Em desenvolvimento e no deploy, o front e a API ficam na mesma origem (proxy do 
 |---|---|---|
 | `Content-Security-Policy` | `default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'` | REQ-37 |
 | `Strict-Transport-Security` | `max-age=63072000; includeSubDomains; preload` | REQ-38 |
+| `X-Frame-Options` | `DENY` | REQ-39 |
 
 Conferir com `curl -I http://localhost:8000/api/v1/health`.
 
