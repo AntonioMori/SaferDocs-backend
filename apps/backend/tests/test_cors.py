@@ -251,3 +251,80 @@ def test_origin_repetido_nao_recebe_cors():
     )
     assert preflight_dup.status_code == 403
     assert "access-control-allow-origin" not in preflight_dup.headers
+
+
+# --------------------------------------------------------------- QA caixa-branca
+
+
+def _cors_app():
+    """App real com rotas de teste que já trazem headers CORS e Vary próprios."""
+    from fastapi import APIRouter
+    from fastapi.responses import JSONResponse
+
+    from app.main import create_app
+
+    router = APIRouter()
+
+    @router.get("/_qa/allow-star")
+    def allow_star():
+        return JSONResponse(
+            {}, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Credentials": "true"}
+        )
+
+    @router.get("/_qa/vary-origin")
+    def vary_origin():
+        return JSONResponse({}, headers={"Vary": "Origin"})
+
+    @router.get("/_qa/vary-accept")
+    def vary_accept():
+        return JSONResponse({}, headers={"Vary": "Accept-Encoding"})
+
+    qa_app = create_app()
+    qa_app.include_router(router)
+    return TestClient(qa_app)
+
+
+qa_client = _cors_app()
+
+
+def test_header_cors_da_rota_nao_vaza_para_origem_estranha_nem_sem_origin():
+    for headers in ({"Origin": FOREIGN}, {}):
+        response = qa_client.get("/_qa/allow-star", headers=headers)
+        assert "access-control-allow-origin" not in response.headers, headers
+        assert "access-control-allow-credentials" not in response.headers, headers
+
+
+def test_header_cors_da_rota_e_trocado_pelo_do_middleware_na_origem_permitida():
+    response = qa_client.get("/_qa/allow-star", headers={"Origin": ALLOWED})
+    assert response.headers.get_list("access-control-allow-origin") == [ALLOWED]
+    assert response.headers.get_list("access-control-allow-credentials") == ["true"]
+
+
+def test_vary_origin_nao_e_duplicado():
+    assert qa_client.get("/_qa/vary-origin", headers={"Origin": ALLOWED}).headers["vary"] == "Origin"
+
+
+def test_vary_existente_e_preservado():
+    response = qa_client.get("/_qa/vary-accept", headers={"Origin": ALLOWED})
+    assert response.headers["vary"] == "Accept-Encoding, Origin"
+
+
+def test_get_com_request_method_nao_e_preflight():
+    # Só OPTIONS com Access-Control-Request-Method é preflight.
+    response = client.get(
+        "/api/v1/health", headers={"Origin": ALLOWED, "Access-Control-Request-Method": "PUT"}
+    )
+    assert response.status_code == 200
+    assert "access-control-allow-methods" not in response.headers
+
+
+def test_preflight_recusada_leva_vary_origin():
+    response = preflight(origin=FOREIGN, method="GET")
+    assert response.status_code == 403
+    assert response.headers["vary"] == "Origin"
+
+
+def test_origin_em_maiusculas_nao_casa():
+    # O navegador sempre manda minúsculas; a comparação é exata.
+    response = client.get("/api/v1/health", headers={"Origin": ALLOWED.upper()})
+    assert "access-control-allow-origin" not in response.headers
