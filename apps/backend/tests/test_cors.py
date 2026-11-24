@@ -43,3 +43,49 @@ def test_sem_origin_nao_adiciona_headers_cors():
     response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert "access-control-allow-origin" not in response.headers
+
+
+# --------------------------------------------------------------- preflight (REQ-35)
+
+
+def preflight(path: str = "/api/v1/auth/password", *, origin: str = ALLOWED, method: str = "PUT", headers=""):
+    request_headers = {"Origin": origin, "Access-Control-Request-Method": method}
+    if headers:
+        request_headers["Access-Control-Request-Headers"] = headers
+    return client.options(path, headers=request_headers)
+
+
+def test_preflight_put_com_authorization_retorna_os_headers_certos():
+    response = preflight(method="PUT", headers="authorization, content-type")
+    assert response.status_code == 204
+    assert response.headers["access-control-allow-origin"] == ALLOWED
+    assert response.headers["access-control-allow-methods"] == "GET, POST, PUT, DELETE, OPTIONS"
+    assert response.headers["access-control-allow-headers"] == "Authorization, Content-Type, X-Request-ID"
+    assert "Origin" in response.headers["vary"]
+    assert response.content == b""
+
+
+def test_preflight_responde_antes_da_autenticacao():
+    # Rota autenticada, sem token: a preflight não chega ao get_current_user.
+    response = preflight("/api/v1/sessions", method="DELETE", headers="authorization")
+    assert response.status_code == 204
+
+
+def test_preflight_responde_em_qualquer_rota_da_api():
+    assert preflight("/api/v1/rota-que-nao-existe", method="GET").status_code == 204
+
+
+def test_preflight_de_origem_fora_da_lista_e_recusada():
+    response = preflight(origin=FOREIGN, headers="authorization")
+    assert response.status_code == 403
+    assert response.json()["code"] == "AUTH_009"
+    assert response.json()["request_id"] == response.headers["x-request-id"]
+    assert "access-control-allow-origin" not in response.headers
+    assert "access-control-allow-methods" not in response.headers
+
+
+def test_options_sem_request_method_nao_e_preflight():
+    # Sem Access-Control-Request-Method, é um OPTIONS comum e vai para as rotas.
+    response = client.options("/api/v1/health", headers={"Origin": ALLOWED})
+    assert response.status_code == 405
+    assert response.headers["access-control-allow-origin"] == ALLOWED
