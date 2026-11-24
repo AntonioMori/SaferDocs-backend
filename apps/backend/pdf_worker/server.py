@@ -94,6 +94,18 @@ async def _read_request(reader: asyncio.StreamReader) -> bytes:
     return bytes(raw)  # a única cópia do PDF no servidor
 
 
+async def _discard_input(reader: asyncio.StreamReader) -> None:
+    """Lê e descarta o que o cliente ainda está mandando, para ele terminar o envio e ler a resposta.
+
+    Sem isso, um cliente mandando um PDF maior que o buffer do socket recebe EPIPE
+    no envio e nunca lê o BUSY. Em pedaços pequenos e com prazo: nada fica em memória.
+    """
+    with contextlib.suppress(TimeoutError, ConnectionError):
+        async with asyncio.timeout(READ_TIMEOUT_SECONDS):
+            while await reader.read(64 * 1024):
+                pass
+
+
 async def _run_task(raw_request: bytes) -> bytes:
     try:
         process = await asyncio.create_subprocess_exec(
@@ -141,6 +153,7 @@ async def _handle(
             await asyncio.wait_for(semaphore.acquire(), QUEUE_TIMEOUT_SECONDS)
         except TimeoutError:
             writer.write(error(ERR_BUSY))
+            await _discard_input(reader)
             return
         try:
             try:

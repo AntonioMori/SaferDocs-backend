@@ -318,3 +318,31 @@ def test_ambiente_do_worker_sem_rede_e_sem_segredos():
     marcas = ("SECRET", "PASSWORD", "TOKEN", "PEPPER", "MASTER", "DATABASE", "JWT")
     assert nomes, "não consegui ler o ambiente do container"
     assert [k for k in nomes if any(m in k.upper() for m in marcas)] == []
+
+
+def test_busy_com_pdf_grande_o_cliente_termina_de_enviar_e_le_a_resposta(server, tmp_path, monkeypatch):
+    # Achado no QA caixa-preta: com 20 MB na fila, o worker fechava antes de ler e o
+    # cliente recebia EPIPE (500 na API). Agora o worker descarta a entrada e o BUSY chega.
+    import concurrent.futures
+
+    monkeypatch.setattr(server, "MAX_CONCURRENT_TASKS", 1)
+    monkeypatch.setattr(server, "QUEUE_TIMEOUT_SECONDS", 0.5)
+    original = server._run_task
+
+    async def lenta(raw):
+        await asyncio.sleep(4)
+        return await original(raw)
+
+    monkeypatch.setattr(server, "_run_task", lenta)
+    pequeno = protocol.encode({"op": "inspect", "args": {}}, make_pdf())
+    grande = protocol.encode({"op": "inspect", "args": {}}, make_pdf() + b" " * (20 * 1024 * 1024))
+
+    def cenario(caminho):
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            ocupa = pool.submit(_call_socket, caminho, pequeno)
+            time.sleep(0.3)
+            resposta = _call_socket(caminho, grande)  # levantaria BrokenPipeError antes da correção
+            ocupa.result()
+            return protocol.decode(protocol.reader_from_bytes(resposta))[0]
+
+    assert _with_server(server, tmp_path, monkeypatch, cenario) == {"ok": False, "error": "BUSY"}
