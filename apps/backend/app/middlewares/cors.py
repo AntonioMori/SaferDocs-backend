@@ -8,12 +8,22 @@ nenhuma origem fora da lista receba header CORS algum.
 - Origem fora da lista: a requisição segue sem nenhum header CORS e o navegador
   bloqueia a leitura da resposta.
 - Requisição sem `Origin` (mesma origem, curl, servidores): passa direto.
+- Preflight (`OPTIONS` com `Access-Control-Request-Method`): respondida aqui
+  mesmo, com 204, antes de rate limit, CSRF e autenticação (REQ-35). A de uma
+  origem fora da lista é recusada com 403, sem headers CORS.
 """
 
 from collections.abc import Iterable
 
 from starlette.datastructures import Headers, MutableHeaders
+from starlette.requests import Request
+from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app.core.errors import ErrorCode, error_response
+
+ALLOWED_METHODS = ("GET", "POST", "PUT", "DELETE", "OPTIONS")
+ALLOWED_HEADERS = ("Authorization", "Content-Type", "X-Request-ID")
 
 
 class CORSMiddleware:
@@ -29,12 +39,37 @@ class CORSMiddleware:
             await self.app(scope, receive, send)
             return
 
-        origin = Headers(scope=scope).get("origin")
+        headers = Headers(scope=scope)
+        origin = headers.get("origin")
         if origin is None:
             await self.app(scope, receive, send)
             return
 
+        if scope["method"] == "OPTIONS" and "access-control-request-method" in headers:
+            response = self._preflight(scope, origin)
+            await response(scope, receive, send)
+            return
+
         await self.app(scope, receive, self._send_with_cors(send, origin))
+
+    def _preflight(self, scope: Scope, origin: str) -> Response:
+        if not self.is_allowed(origin):
+            return self._reject(scope)
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Methods": ", ".join(ALLOWED_METHODS),
+                "Access-Control-Allow-Headers": ", ".join(ALLOWED_HEADERS),
+                "Vary": "Origin",
+            },
+        )
+
+    def _reject(self, scope: Scope, message: str | None = None) -> Response:
+        """Preflight recusada: erro padronizado, sem nenhum header CORS."""
+        response = error_response(Request(scope), ErrorCode.AUTH_ORIGIN_NOT_ALLOWED, message)
+        response.headers["Vary"] = "Origin"
+        return response
 
     def _send_with_cors(self, send: Send, origin: str) -> Send:
         allowed = self.is_allowed(origin)
