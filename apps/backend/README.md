@@ -162,13 +162,15 @@ Regras (verificadas pelos testes em `tests/test_migration_rules.py` e `tests/tes
 - **Upgrade e downgrade:** toda migration implementa as duas funções; `downgrade()` desfaz exatamente o que `upgrade()` fez.
 - **Trabalho em paralelo:** o histórico precisa ter uma única cabeça. Se duas pessoas criarem migrations ao mesmo tempo, antes do merge rode `uv run alembic heads` e, havendo duas, `uv run alembic merge heads -m "merge"`.
 
-## Log de auditoria (REQ-55)
+## Log de auditoria (REQ-55 e 56)
 
 `audit.record(...)` grava na tabela `audit_log`, que só aceita inserção. São registrados login, logout, falha de autenticação, emissão de token, troca de senha, assinatura e verificação, além de outros eventos de segurança (bloqueio de conta, reuso de refresh, sessões encerradas).
 
 A imutabilidade tem duas barreiras independentes, criadas pela migration `208d8c8cdcb5`:
 - **Triggers:** `UPDATE`, `DELETE` e `TRUNCATE` no `audit_log` falham com `audit_log é append-only`, inclusive para o dono da tabela e para superusuários.
 - **Permissões:** o papel `saferdocs_app` tem acesso normal às demais tabelas, mas só `SELECT` e `INSERT` no `audit_log`.
+
+Campos de cada registro (REQ-56), garantidos pelo serviço e por `NOT NULL`/`CHECK` no banco: horário UTC, IP, User-Agent, ação e resultado (`SUCCESS` ou `FAILURE`). O `user_id` só pode faltar em `AUTH_FAILURE` (e-mail inexistente) e `DOCUMENT_VERIFIED` (verificação pública). Sem requisição, IP e User-Agent ficam `desconhecido`. O `details` (JSONB) é opcional e passa por um filtro: chaves com nome sensível (senha, token, chave, código, PDF...) e valores binários viram `[removido]`.
 
 Em produção, a API deve conectar com um usuário membro desse papel, e só as migrations usam o dono do banco:
 ```sql

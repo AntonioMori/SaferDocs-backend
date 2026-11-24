@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, func, text
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,18 +16,29 @@ class AuditLog(Base):
 
     No banco, triggers recusam UPDATE, DELETE e TRUNCATE, e o papel
     `saferdocs_app` só tem SELECT e INSERT (migration 208d8c8cdcb5).
+
+    REQ-56: todo registro tem horário (UTC), IP, User-Agent, ação e resultado.
+    O usuário só falta em falha de autenticação e na verificação pública.
     """
 
     __tablename__ = "audit_log"
-    __table_args__ = (Index("ix_audit_log_user_occurred", "user_id", "occurred_at"),)
+    __table_args__ = (
+        Index("ix_audit_log_user_occurred", "user_id", "occurred_at"),
+        CheckConstraint("action <> ''", name="action_preenchida"),
+        CheckConstraint("result IN ('SUCCESS', 'FAILURE')", name="result_valido"),
+        CheckConstraint(
+            "user_id IS NOT NULL OR action IN ('AUTH_FAILURE', 'DOCUMENT_VERIFIED')",
+            name="user_id_obrigatorio",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    ip: Mapped[str | None] = mapped_column(String(64))
-    user_agent: Mapped[str | None] = mapped_column(Text)
+    ip: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_agent: Mapped[str] = mapped_column(Text, nullable=False)
     action: Mapped[str] = mapped_column(String(40), nullable=False)
     result: Mapped[str] = mapped_column(String(10), nullable=False)
     details: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
