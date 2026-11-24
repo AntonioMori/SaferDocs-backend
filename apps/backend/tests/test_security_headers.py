@@ -76,3 +76,7 @@ def test_x_content_type_options(responses):
 
 def test_referrer_policy(responses):
     assert_everywhere(responses, "referrer-policy", "strict-origin-when-cross-origin")
+
+
+def test_permissions_policy(responses):
+    assert_everywhere(responses, "permissions-policy", "camera=(), microphone=(), geolocation=()")
