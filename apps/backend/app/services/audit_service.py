@@ -7,12 +7,15 @@ Qualquer parte do sistema registra eventos com:
 
 `details` nunca recebe senha, token, chave ou conteúdo de PDF.
 
-STUB (INFRA-02) | implementação real: REQ-55/56 (dono: AntonioMori).
-Hoje só escreve no log da aplicação. A versão real grava na tabela
-append-only `audit_log`, com a mesma assinatura.
+O registro entra na transação de quem chama: é gravado no `commit()` da
+operação e desaparece junto se ela for desfeita (um sucesso que não
+aconteceu não fica no log). Falhas que encerram a requisição com erro
+precisam de `db.commit()` antes do `raise`, como faz o login.
+
+A tabela `audit_log` é append-only (REQ-55): o banco recusa UPDATE,
+DELETE e TRUNCATE, então não existe função para alterar ou apagar registros.
 """
 
-import logging
 import uuid
 from enum import StrEnum
 from typing import Any
@@ -20,7 +23,8 @@ from typing import Any
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-logger = logging.getLogger("saferdocs.audit")
+from app.core.request_info import client_ip, user_agent
+from app.db.models import AuditLog
 
 
 class AuditAction(StrEnum):
@@ -63,5 +67,13 @@ def record(
     details: dict[str, Any] | None = None,
 ) -> None:
     """Acrescenta um registro ao log de auditoria."""
-    del db, request  # usados pela implementação real
-    logger.info("audit action=%s result=%s user=%s details=%s", action, result, user_id, details)
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            ip=client_ip(request) if request is not None else None,
+            user_agent=user_agent(request) if request is not None else None,
+            action=AuditAction(action).value,
+            result=AuditResult(result).value,
+            details=details,
+        )
+    )
