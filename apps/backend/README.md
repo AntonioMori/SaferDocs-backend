@@ -177,6 +177,17 @@ Em produção, a API deve conectar com um usuário membro desse papel, e só as 
 CREATE ROLE saferdocs_api LOGIN PASSWORD '<senha forte>' IN ROLE saferdocs_app;
 ```
 
+### Atividade de segurança (REQ-58)
+
+Eventos que o próprio usuário precisa ver ficam em `security_events`, separados do audit log porque precisam do campo "visto": login de IP desconhecido, troca de senha, ativação e desativação do 2FA, reuso de refresh token e mudança de IP durante a sessão. O IP de login é comparado pelo HMAC com os já usados pela conta (`known_ips`); o IP do cadastro já conta como conhecido.
+
+| Rota | Efeito |
+|---|---|
+| `GET /api/v1/security/events` | Até 100 eventos, os não vistos primeiro: `{id, type, created_at, seen, details}` |
+| `POST /api/v1/security/events/seen` | `{ids: [...]}` marca como vistos; ids de outra conta são ignorados |
+
+O login e o refresh devolvem `unseen_security_events`, para o front destacar os eventos não vistos logo após entrar.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
