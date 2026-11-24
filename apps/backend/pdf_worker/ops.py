@@ -14,7 +14,8 @@ from typing import Any
 
 import pikepdf
 
-from pdf_worker.protocol import ERR_BAD_REQUEST, ERR_UNPROCESSABLE
+from pdf_worker.protocol import ERR_BAD_REQUEST, ERR_HAS_JAVASCRIPT, ERR_UNPROCESSABLE
+from pdf_worker.validate import has_javascript
 
 MAX_PAGES = 5000
 
@@ -26,11 +27,23 @@ class OpError(Exception):
 
 
 def open_pdf(pdf: bytes) -> pikepdf.Pdf:
-    """Abre o PDF em memória. PDF corrompido ou protegido por senha não é processável."""
+    """Abre o PDF em memória e recusa JavaScript (REQ-63). Toda operação começa aqui.
+
+    PDF corrompido ou protegido por senha não é processável.
+    """
     try:
-        return pikepdf.open(io.BytesIO(pdf))
+        document = pikepdf.open(io.BytesIO(pdf))
     except (pikepdf.PdfError, pikepdf.PasswordError, ValueError, OSError):
         raise OpError(ERR_UNPROCESSABLE) from None
+    try:
+        javascript = has_javascript(document)
+    except (pikepdf.PdfError, ValueError, TypeError, RecursionError):
+        document.close()
+        raise OpError(ERR_UNPROCESSABLE) from None
+    if javascript:
+        document.close()
+        raise OpError(ERR_HAS_JAVASCRIPT)
+    return document
 
 
 def inspect(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
