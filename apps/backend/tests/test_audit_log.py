@@ -85,7 +85,12 @@ def test_papel_da_aplicacao_nao_tem_permissao_de_alterar(migrated_db, comando):
 def test_papel_da_aplicacao_pode_ler_e_inserir(migrated_db):
     with get_engine().connect() as conexao:
         conexao.execute(text("SET ROLE saferdocs_app"))
-        conexao.execute(text("INSERT INTO audit_log (action, result) VALUES ('LOGIN', 'SUCCESS')"))
+        conexao.execute(
+            text(
+                "INSERT INTO audit_log (user_id, ip, user_agent, action, result) "
+                "VALUES (gen_random_uuid(), '1.2.3.4', 'ua', 'LOGIN', 'SUCCESS')"
+            )
+        )
         assert conexao.scalar(text("SELECT count(*) FROM audit_log")) >= 1
         assert conexao.scalar(text("SELECT count(*) FROM users")) >= 0  # demais tabelas seguem acessíveis
         conexao.rollback()
