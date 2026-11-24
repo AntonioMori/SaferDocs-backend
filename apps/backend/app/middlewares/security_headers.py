@@ -20,6 +20,8 @@ SECURITY_HEADERS: dict[str, str] = {
     "Strict-Transport-Security": "max-age=63072000; includeSubDomains; preload",
     # REQ-39: nenhum site pode embutir a aplicação num <iframe> (clickjacking).
     "X-Frame-Options": "DENY",
+    # REQ-40: o navegador respeita o Content-Type e não adivinha o tipo (um PDF nunca vira HTML).
+    "X-Content-Type-Options": "nosniff",
 }
 
 
