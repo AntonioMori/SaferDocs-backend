@@ -1,10 +1,11 @@
 """CORS (REQ-31 a 36).
 
-Implementação própria, em vez do `CORSMiddleware` do Starlette, para que
-nenhuma origem fora da lista receba header CORS algum.
+Nenhuma origem fora da lista recebe header CORS algum.
 
 - Origem na lista (`CORS_ALLOWED_ORIGINS`): recebe `Access-Control-Allow-Origin`
-  com a própria origem, nunca `*` (REQ-31).
+  com a própria origem, nunca `*` (REQ-31), e `Access-Control-Allow-Credentials:
+  true` (REQ-34). O `CORSMiddleware` do Starlette envia esse segundo header até
+  para origens fora da lista; por isso esta implementação própria.
 - Origem fora da lista: a requisição segue sem nenhum header CORS e o navegador
   bloqueia a leitura da resposta.
 - Requisição sem `Origin` (mesma origem, curl, servidores): passa direto.
@@ -25,6 +26,8 @@ from app.core.errors import ErrorCode, error_response
 ALLOWED_METHODS = ("GET", "POST", "PUT", "DELETE", "OPTIONS")
 ALLOWED_HEADERS = ("Authorization", "Content-Type", "X-Request-ID")
 _ALLOWED_HEADERS_LOWER = frozenset(h.lower() for h in ALLOWED_HEADERS)
+# Headers da resposta que o JavaScript da origem permitida pode ler.
+EXPOSED_HEADERS = ("X-Request-ID", "Retry-After")
 
 
 class CORSMiddleware:
@@ -68,6 +71,7 @@ class CORSMiddleware:
             status_code=204,
             headers={
                 "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
                 "Access-Control-Allow-Methods": ", ".join(ALLOWED_METHODS),
                 "Access-Control-Allow-Headers": ", ".join(ALLOWED_HEADERS),
                 "Vary": "Origin",
@@ -90,6 +94,9 @@ class CORSMiddleware:
                 headers.add_vary_header("Origin")
                 if allowed:
                     headers["Access-Control-Allow-Origin"] = origin
+                    # REQ-34: credenciais (cookie de refresh) só para origens confiáveis.
+                    headers["Access-Control-Allow-Credentials"] = "true"
+                    headers["Access-Control-Expose-Headers"] = ", ".join(EXPOSED_HEADERS)
             await send(message)
 
         return wrapped
