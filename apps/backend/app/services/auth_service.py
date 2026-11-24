@@ -167,16 +167,31 @@ def login_totp(db: Session, data: LoginTotpIn, request: Request, response: Respo
         challenge.used_at = now
         raise _invalid_mfa(db, request, user.id, "account_locked")
 
-    step = totp.verify(totp_service.load_secret(user) or "", data.code, user.totp_last_step)
-    if step is None:
+    if data.recovery_code is not None:
+        ok = totp_service.use_recovery_code(db, user, data.recovery_code)
+        reason = "wrong_recovery_code"
+    else:
+        step = totp.verify(totp_service.load_secret(user) or "", data.code, user.totp_last_step)
+        ok = step is not None
+        reason = "wrong_totp"
+    if not ok:
         challenge.attempts += 1
         _register_failure(db, request, user, now)  # REQ-03: falhas do TOTP também bloqueiam a conta
         if user.locked_until is not None and user.locked_until > now:
             challenge.used_at = now
-        raise _invalid_mfa(db, request, user.id, "wrong_totp", audit.AuditAction.TOTP_FAILURE)
+        raise _invalid_mfa(db, request, user.id, reason, audit.AuditAction.TOTP_FAILURE)
 
     challenge.used_at = now
-    user.totp_last_step = step
+    if data.recovery_code is not None:
+        audit.record(
+            db,
+            action=audit.AuditAction.RECOVERY_CODE_USED,
+            result=audit.AuditResult.SUCCESS,
+            request=request,
+            user_id=user.id,
+        )
+    else:
+        user.totp_last_step = step
     return _complete_login(db, user, request, response)
 
 
