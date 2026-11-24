@@ -265,3 +265,59 @@ def test_nada_e_gravado_em_arquivo_temporario(monkeypatch):
     response = _post("/_teste/upload", [("file", pdf, "a.pdf")])
     assert response.status_code == 200
     assert response.json()["size"] == len(pdf)
+
+
+# --------------------------------------------------------------- magic number (REQ-60)
+
+EXE = b"MZ\x90\x00\x03\x00\x00\x00" + b"\x00" * 120  # cabeçalho de um executável do Windows
+
+
+@pytest.mark.parametrize(
+    "conteudo",
+    [
+        EXE,  # executável renomeado para .pdf
+        b"<html><script>alert(1)</script></html>",
+        b"%PDF",  # só 4 bytes: falta o hífen
+        b"%pdf-1.7\n",  # minúsculas
+        b" %PDF-1.7\n",  # espaço antes
+        b"\xef\xbb\xbf%PDF-1.7\n",  # BOM antes
+        b"PK\x03\x04" + b"0" * 100,  # zip/docx
+        b"",
+    ],
+)
+def test_arquivo_que_nao_comeca_com_pdf_e_recusado(conteudo):
+    response = _post("/_teste/upload", [("file", conteudo, "documento.pdf")])
+    assert response.status_code == 400
+    assert response.json()["code"] == "DOC_001"
+
+
+def test_nome_e_content_type_da_parte_nao_contam():
+    # O cliente controla o nome e o Content-Type; só os bytes decidem.
+    response = _post("/_teste/upload", [("file", PDF, "foto.png")])
+    assert response.status_code == 200
+
+
+def test_magic_number_dividido_entre_pedacos_e_aceito():
+    # Os 5 bytes podem chegar em pedaços diferentes da rede.
+    body, content_type = _multipart([("file", PDF, "a.pdf")])
+    inicio = body.index(b"%PDF-")
+    pedacos = [body[: inicio + 2], body[inicio + 2 : inicio + 4], body[inicio + 4 :]]
+    status, _, _ = _asgi_post(pedacos, [(b"content-type", content_type.encode())])
+    assert status == 200
+
+
+def test_arquivo_que_nao_e_pdf_para_a_leitura_logo_no_inicio():
+    # Um executável de 15 MB é recusado depois de ler só o primeiro pedaço.
+    body, content_type = _multipart([("file", EXE + b"\x00" * (15 * MB), "a.pdf")])
+    pedacos = [body[i : i + MB] for i in range(0, len(body), MB)]
+    status, lidos, total = _asgi_post(pedacos, [(b"content-type", content_type.encode())])
+    assert status == 400
+    assert total > 15
+    assert lidos == 1, f"leu {lidos} MB antes de recusar"
+
+
+def test_tamanho_declarado_e_conferido_antes_do_magic_number():
+    # Com Content-Length acima do limite nada é lido, nem os 5 primeiros bytes.
+    response = _post("/_teste/upload", [("file", EXE + b"\x00" * (21 * MB), "a.pdf")])
+    assert response.status_code == 413
+    assert response.json()["code"] == "DOC_002"
