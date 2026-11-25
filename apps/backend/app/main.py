@@ -18,6 +18,7 @@ from app.core.config import ConfigError, Settings, get_settings
 from app.core.errors import register_error_handlers
 from app.db.session import check_database
 from app.middlewares.cors import CORSMiddleware
+from app.middlewares.csrf import CSRFMiddleware
 from app.middlewares.request_id import RequestIdMiddleware
 from app.middlewares.security_headers import SecurityHeadersMiddleware
 from app.middlewares.unhandled_errors import UnhandledErrorMiddleware
@@ -69,8 +70,9 @@ def create_app() -> FastAPI:
     )
     register_error_handlers(app)
     # O último adicionado é o mais externo:
-    # request_id -> security_headers -> CORS -> unhandled_errors -> rotas.
+    # request_id -> security_headers -> CORS -> CSRF -> unhandled_errors -> rotas.
     app.add_middleware(UnhandledErrorMiddleware)
+    app.add_middleware(CSRFMiddleware, allowed_origins=settings.cors_allowed_origins)
     app.add_middleware(
         CORSMiddleware,
         allowed_origins=settings.cors_allowed_origins,

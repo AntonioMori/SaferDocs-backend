@@ -30,7 +30,7 @@ def _eu(user: CurrentUser):
 def client(migrated_db):
     app = create_app()
     app.include_router(router)
-    return TestClient(app)
+    return TestClient(app, headers={"Origin": "http://localhost:3039"})  # o front manda Origin (REQ-65)
 
 
 @pytest.fixture
