@@ -20,7 +20,7 @@ A = audit.AuditAction
 
 @pytest.fixture
 def client(migrated_db):
-    return TestClient(app)
+    return TestClient(app, headers={"Origin": "http://localhost:3039"})  # o front manda Origin (REQ-65)
 
 
 def _acoes(user_id) -> list[str]:
