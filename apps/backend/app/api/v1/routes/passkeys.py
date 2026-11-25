@@ -4,6 +4,7 @@ Registro: autenticado (o usuário já entrou com senha e cadastra o dispositivo)
 Login: público, com rate limit por IP como o login com senha (REQ-05).
 """
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -13,7 +14,7 @@ from app.core.config import get_settings
 from app.core.request_info import client_ip
 from app.middlewares.rate_limit import check_rate_limit
 from app.schemas.auth import TokenOut
-from app.schemas.passkeys import PasskeyLoginIn, PasskeyOut, PasskeyRegisterIn
+from app.schemas.passkeys import PasskeyLoginIn, PasskeyOut, PasskeyRegisterIn, PasskeyRenameIn
 from app.services import passkey_service
 
 router = APIRouter(prefix="/auth/passkeys", tags=["passkeys"])
@@ -56,3 +57,30 @@ def login_options(db: DbSession) -> dict[str, Any]:
 def login_verify(data: PasskeyLoginIn, request: Request, response: Response, db: DbSession) -> TokenOut:
     """Confere a asserção e faz o login (access token + cookie de refresh, como o login com senha)."""
     return passkey_service.authenticate(db, data.credential.model_dump(exclude_none=True), request, response)
+
+
+# Gerenciamento (REQ-10): só o dono enxerga e mexe nas próprias passkeys.
+
+
+@router.get("", response_model=list[PasskeyOut], dependencies=[Depends(get_auth_context)])
+def list_passkeys(user: CurrentUser, db: DbSession) -> list[PasskeyOut]:
+    """Dispositivos do usuário, sem chave pública nem contador."""
+    return [PasskeyOut.model_validate(p) for p in passkey_service.list_credentials(db, user)]
+
+
+@router.put("/{passkey_id}", response_model=PasskeyOut, dependencies=[Depends(get_auth_context)])
+def rename_passkey(
+    passkey_id: uuid.UUID, data: PasskeyRenameIn, user: CurrentUser, request: Request, db: DbSession
+) -> PasskeyOut:
+    """Renomeia um dispositivo. De outro usuário ou inexistente: 404."""
+    stored = passkey_service.rename_credential(db, user, passkey_id, data.name, request)
+    return PasskeyOut.model_validate(stored)
+
+
+@router.delete(
+    "/{passkey_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(get_auth_context)]
+)
+def revoke_passkey(passkey_id: uuid.UUID, user: CurrentUser, request: Request, db: DbSession) -> Response:
+    """Revoga um dispositivo: ele não autentica mais."""
+    passkey_service.revoke_credential(db, user, passkey_id, request)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
