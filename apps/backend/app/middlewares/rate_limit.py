@@ -20,15 +20,17 @@ A API roda num processo só (um worker do uvicorn), então a memória basta. Com
 vários processos, cada um teria o próprio contador: aí o estado precisaria ir
 para o PostgreSQL ou um Redis. O total de chaves é limitado (MAX_KEYS), para um
 atacante que troca de IP ou de e-mail a cada pedido não esgotar a memória; com
-a tabela cheia só saem chaves expiradas, e uma chave nova espera em vez de
-apagar o contador de outra.
+a tabela cheia só saem chaves expiradas (examina um lote das mais antigas), e uma
+chave nova espera em vez de apagar o contador de outra. Os IPv6 contam pelo /64.
 """
 
+import ipaddress
 import math
 import threading
 import time
 from collections import OrderedDict, deque
 from collections.abc import Callable
+from itertools import islice
 
 from fastapi import Request
 
@@ -37,6 +39,9 @@ from app.core.request_info import client_ip
 
 UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600}
 MAX_KEYS = 100_000
+# Quantas chaves, a partir da mais antiga, o `_evict` examina por vez.
+EVICT_BATCH = 256
+IPV6_PREFIX = 64
 
 _clock: Callable[[], float] = time.monotonic  # trocado nos testes
 
@@ -80,22 +85,28 @@ class SlidingWindowLimiter:
             return None
 
     def _evict(self, now: float) -> float | None:
-        """Abre espaço tirando chaves cuja janela já passou, das mais antigas para as novas.
+        """Abre espaço tirando chaves cuja janela já passou, entre as mais antigas da fila.
 
+        Examina até EVICT_BATCH chaves a partir do início da fila LRU e apaga as
+        expiradas, mesmo as que estão atrás de uma chave ainda ativa (cada janela
+        tem o próprio tamanho, então a ordem de uso não é a ordem de expiração).
         Só sai chave expirada: tirar uma ativa zeraria o contador de alguém (um
-        atacante encheria a tabela para apagar o bloqueio de uma conta). Se todas
-        estão ativas, a chave nova espera (fail closed) e o retorno é quanto.
-        Custo amortizado O(1): cada chave sai uma vez só.
+        atacante encheria a tabela para apagar o bloqueio de uma conta). Se nenhuma
+        das examinadas expirou, a chave nova espera (fail closed) e o retorno é quanto.
+        Custo limitado por chamada (EVICT_BATCH) e cada chave sai uma vez só.
+        Limite conhecido: expiradas além do lote só saem quando chegarem ao início.
         """
-        while self._hits:
-            entry, (window, hits) = next(iter(self._hits.items()))
+        wait: float | None = None
+        for entry in list(islice(self._hits, EVICT_BATCH)):
+            window, hits = self._hits[entry]
             expires = (hits[-1] + window) if hits else now
-            if expires > now:
-                return expires - now
-            del self._hits[entry]
-            if len(self._hits) < self._max_keys:
-                return None
-        return None
+            if expires <= now:
+                del self._hits[entry]
+            elif wait is None or expires - now < wait:
+                wait = expires - now
+        if len(self._hits) < self._max_keys:
+            return None
+        return wait if wait is not None else 0.0
 
     def reset(self) -> None:
         with self._lock:
@@ -121,10 +132,27 @@ def check_rate_limit(scope: str, key: str, limit: str) -> None:
         raise AppError(ErrorCode.RATE_LIMITED, headers={"Retry-After": str(max(1, math.ceil(retry_after)))})
 
 
+def ip_bucket(ip: str | None) -> str:
+    """Chave do limitador para um IP. IPv6 agrupa pelo /64: uma ligação recebe um /64 inteiro (2^64
+    endereços), e sem isso um atacante encheria a tabela só trocando os últimos bits. IPv4 e texto
+    que não é IP (ex.: "desconhecido") ficam como vieram."""
+    if not ip:
+        return "desconhecido"
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:  # ::ffff:1.2.3.4 é o IPv4 1.2.3.4
+            return str(address.ipv4_mapped)
+        return str(ipaddress.IPv6Network((address, IPV6_PREFIX), strict=False))
+    return str(address)
+
+
 def limit_by_ip(scope: str, limit: str) -> Callable[[Request], None]:
-    """Dependência do FastAPI que limita requisições por IP."""
+    """Dependência do FastAPI que limita requisições por IP (IPv6 agrupado por /64)."""
 
     def dependency(request: Request) -> None:
-        check_rate_limit(scope, client_ip(request) or "desconhecido", limit)
+        check_rate_limit(scope, ip_bucket(client_ip(request)), limit)
 
     return dependency

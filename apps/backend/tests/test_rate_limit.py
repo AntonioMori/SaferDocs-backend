@@ -110,6 +110,71 @@ def test_tabela_cheia_de_chaves_ativas_faz_a_nova_esperar(relogio):
     assert limiter.hit("s", "b", 5, 60) is None  # "b" continua com o contador
 
 
+def test_chave_expirada_atras_de_uma_ativa_tambem_e_removida(relogio):
+    # QA (M4): a fila é por uso, não por expiração; a expirada não pode ficar presa atrás da ativa.
+    limiter = SlidingWindowLimiter(max_keys=3)
+    relogio.agora = 1000
+    limiter.hit("hora", "ativa", 5, 3600)
+    limiter.hit("s", "curta1", 5, 60)
+    limiter.hit("s", "curta2", 5, 60)
+    relogio.agora = 1100
+    assert limiter.hit("s", "nova", 5, 60) is None
+    assert len(limiter) <= 3
+    # A ativa continua com o contador dela.
+    assert limiter.hit("hora", "ativa", 1, 3600) is not None
+
+
+def test_o_lote_examinado_e_limitado(relogio, monkeypatch):
+    monkeypatch.setattr(rate_limit, "EVICT_BATCH", 2)
+    limiter = SlidingWindowLimiter(max_keys=4)
+    relogio.agora = 1000
+    for chave in ("a", "b"):
+        limiter.hit("hora", chave, 5, 3600)  # ativas, na frente da fila
+    for chave in ("c", "d"):
+        limiter.hit("s", chave, 5, 60)  # expiradas, fora do lote
+    relogio.agora = 1100
+    assert limiter.hit("s", "nova", 5, 60) is not None  # fail closed: o lote só viu chaves ativas
+
+
+def test_chave_usada_ha_pouco_vai_para_o_fim_da_fila_e_nao_e_a_examinada(relogio, monkeypatch):
+    # QA (R04, move_to_end): com o lote de 1, a chave antiga mas usada agora não pode ser a examinada.
+    monkeypatch.setattr(rate_limit, "EVICT_BATCH", 1)
+    limiter = SlidingWindowLimiter(max_keys=3)
+    for instante, chave in ((1000, "a"), (1001, "b"), (1002, "c")):
+        relogio.agora = instante
+        limiter.hit("s", chave, 5, 60)
+    relogio.agora = 1050
+    limiter.hit("s", "a", 5, 60)  # "a" é a mais antiga, mas acabou de ser usada
+    relogio.agora = 1070  # "b" e "c" expiraram; "a" não
+    assert limiter.hit("s", "d", 5, 60) is None
+    assert limiter.hit("s", "a", 1, 60) is not None  # "a" manteve a requisição de 1050
+
+
+def test_ipv6_do_mesmo_64_divide_o_balde(relogio):
+    from starlette.requests import Request
+
+    def pedido(ip):
+        return Request({"type": "http", "client": (ip, 1234), "headers": []})
+
+    dependencia = rate_limit.limit_by_ip("v6", "2/minute")
+    dependencia(pedido("2001:db8:1:2::1"))
+    dependencia(pedido("2001:db8:1:2:ffff:ffff:ffff:ffff"))
+    with pytest.raises(AppError) as erro:
+        dependencia(pedido("2001:db8:1:2:abcd::9"))
+    assert erro.value.code == ErrorCode.RATE_LIMITED
+    dependencia(pedido("2001:db8:1:3::1"))  # outro /64 tem o próprio balde
+
+
+def test_ip_bucket():
+    assert rate_limit.ip_bucket("2001:db8:1:2::1") == "2001:db8:1:2::/64"
+    assert rate_limit.ip_bucket("2001:0DB8:1:2::1") == rate_limit.ip_bucket("2001:db8:1:2:0:0:0:2")
+    assert rate_limit.ip_bucket("203.0.113.7") == "203.0.113.7"
+    assert rate_limit.ip_bucket("::ffff:203.0.113.7") == "203.0.113.7"
+    assert rate_limit.ip_bucket("desconhecido") == "desconhecido"  # não é IP: fica como veio
+    assert rate_limit.ip_bucket(None) == "desconhecido"
+    assert rate_limit.ip_bucket("") == "desconhecido"
+
+
 def test_expiracao_usa_a_janela_de_cada_chave(relogio):
     # QA: a chave de janela de 1 h não pode sair porque a chave nova usa janela de 1 min.
     limiter = SlidingWindowLimiter(max_keys=1)

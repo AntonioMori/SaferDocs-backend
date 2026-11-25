@@ -530,3 +530,243 @@ def test_mesmo_dispositivo_pode_ser_registrado_de_novo_depois_de_revogado(client
     passkey_id = registrar(client, conta, autenticador).json()["id"]
     client.delete(f"{URL}/{passkey_id}", headers=conta["headers"])
     assert registrar(client, conta, autenticador).status_code == 201
+
+
+# --------------------------------------------------------------- QA: limpeza, limites, corrida, bloqueio
+
+
+def _desafios(**filtros):
+    with get_sessionmaker()() as db:
+        consulta = select(WebauthnChallenge)
+        for coluna, valor in filtros.items():
+            consulta = consulta.where(getattr(WebauthnChallenge, coluna) == valor)
+        return list(db.scalars(consulta.order_by(WebauthnChallenge.created_at)))
+
+
+def _desafio_vencido(ha):
+    with get_sessionmaker()() as db:
+        desafio = WebauthnChallenge(
+            user_id=None,
+            challenge=uuid.uuid4().bytes * 2,
+            kind="login",
+            expires_at=datetime.now(UTC) - ha,
+        )
+        db.add(desafio)
+        db.commit()
+        return desafio.challenge
+
+
+def test_desafio_vencido_ha_mais_de_um_dia_e_apagado_ao_criar_outro(client):
+    velho = _desafio_vencido(timedelta(days=2))
+    recente = _desafio_vencido(timedelta(hours=1))
+    assert client.post("/api/v1/auth/passkeys/login/options").status_code == 200
+    restantes = {d.challenge for d in _desafios()}
+    assert velho not in restantes
+    assert recente in restantes  # ainda dentro da retenção
+
+
+def test_ttl_do_desafio_e_de_cinco_minutos(client, conta):
+    client.post("/api/v1/auth/passkeys/register/options", headers=conta["headers"])
+    desafio = _desafios(user_id=conta["id"])[0]
+    restante = (desafio.expires_at - datetime.now(UTC)).total_seconds()
+    assert abs(restante - 300) <= 2
+
+
+def test_rate_limit_do_login_tem_escopo_proprio_para_options_e_verify(client, monkeypatch):
+    from app.core.config import get_settings
+    from app.middlewares.rate_limit import reset_rate_limits
+
+    autenticador = SoftAuthenticator(user_handle=b"x")
+    opcoes = client.post("/api/v1/auth/passkeys/login/options").json()
+    corpo = {"credential": autenticador.get(opcoes)}
+    monkeypatch.setattr(get_settings(), "rate_limit_login_per_ip", "2/minute")
+    reset_rate_limits()
+    # Encher o options não gasta vaga do verify.
+    assert [client.post("/api/v1/auth/passkeys/login/options").status_code for _ in range(3)] == [
+        200,
+        200,
+        429,
+    ]
+    verify = [client.post("/api/v1/auth/passkeys/login/verify", json=corpo).status_code for _ in range(3)]
+    assert verify == [400, 400, 429]  # o verify tem o limite dele, e chega ao 429
+
+
+def test_rate_limit_do_registro_por_usuario_com_escopo_para_cada_rota(
+    client, conta, outra_conta, monkeypatch
+):
+    from app.core.config import get_settings
+    from app.middlewares.rate_limit import reset_rate_limits
+
+    url = "/api/v1/auth/passkeys/register"
+    opcoes = client.post(f"{url}/options", headers=conta["headers"]).json()
+    corpo = {"credential": SoftAuthenticator().create(opcoes)}
+    monkeypatch.setattr(get_settings(), "rate_limit_passkey_register_per_user", "2/minute")
+    reset_rate_limits()
+    por_opcoes = [client.post(f"{url}/options", headers=conta["headers"]).status_code for _ in range(3)]
+    assert por_opcoes == [200, 200, 429]
+    verify = [
+        client.post(f"{url}/verify", json=corpo, headers=conta["headers"]).status_code for _ in range(3)
+    ]
+    assert verify[2] == 429  # o verify tem o limite dele
+    # Outro usuário, mesmo IP: não é afetado.
+    assert client.post(f"{url}/options", headers=outra_conta["headers"]).status_code == 200
+
+
+def test_transportes_desconhecidos_sao_descartados(client, conta):
+    autenticador = SoftAuthenticator(transports=["internal", "<img>", "usb", "usb", "x" * 20, "hybrid"])
+    resposta = registrar(client, conta, autenticador)
+    assert resposta.status_code == 201
+    assert resposta.json()["transports"] == ["internal", "usb", "hybrid"]
+    assert _credencial_no_banco(conta["id"]).transports == ["internal", "usb", "hybrid"]
+
+
+def _inserir_credenciais(user_id, quantidade):
+    with get_sessionmaker()() as db:
+        for _ in range(quantidade):
+            db.add(
+                WebauthnCredential(
+                    user_id=user_id,
+                    credential_id=uuid.uuid4().bytes * 2,
+                    public_key=b"x",
+                    counter=0,
+                    aaguid=uuid.uuid4(),
+                    name="Antiga",
+                )
+            )
+        db.commit()
+
+
+def test_limite_de_20_passkeys_a_vigesima_passa_e_a_vigesima_primeira_nao(client, conta):
+    _inserir_credenciais(conta["id"], 19)
+    assert registrar(client, conta, SoftAuthenticator()).status_code == 201  # a 20a
+    recusada = registrar(client, conta, SoftAuthenticator())
+    assert recusada.status_code == 400
+    assert recusada.json()["code"] == "AUTH_006"
+    assert len(client.get(URL, headers=conta["headers"]).json()) == 20
+
+
+def test_registro_simultaneo_da_mesma_credencial_vira_falha_da_cerimonia_e_nao_500(
+    client, conta, outra_conta, monkeypatch
+):
+    from app.services import passkey_service
+
+    autenticador = SoftAuthenticator()
+    original = passkey_service.audit.record
+
+    def gravar_concorrente(db, **kwargs):
+        # Outra requisição grava a mesma credencial depois da conferência e antes do commit
+        # (de outro usuário: a linha do usuário em registro está travada).
+        if kwargs["action"] == passkey_service.audit.AuditAction.PASSKEY_REGISTERED:
+            with get_sessionmaker()() as outra:
+                outra.add(
+                    WebauthnCredential(
+                        user_id=outra_conta["id"],
+                        credential_id=autenticador.credential_id,
+                        public_key=b"x",
+                        counter=0,
+                        aaguid=uuid.uuid4(),
+                        name="Concorrente",
+                    )
+                )
+                outra.commit()
+        return original(db, **kwargs)
+
+    monkeypatch.setattr(passkey_service.audit, "record", gravar_concorrente)
+    resposta = registrar(client, conta, autenticador)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "AUTH_006"
+    assert client.get(URL, headers=conta["headers"]).json() == []
+
+
+def test_desafio_de_registro_de_outro_usuario_e_recusado(client, conta, outra_conta):
+    # O desafio de A não vale para B: cada desafio é amarrado a quem o pediu.
+    opcoes_de_a = client.post("/api/v1/auth/passkeys/register/options", headers=conta["headers"]).json()
+    credencial = SoftAuthenticator().create(opcoes_de_a)
+    resposta = client.post(
+        "/api/v1/auth/passkeys/register/verify",
+        json={"credential": credencial},
+        headers=outra_conta["headers"],
+    )
+    assert resposta.status_code == 400
+    assert _credencial_no_banco(outra_conta["id"]) is None
+    assert _credencial_no_banco(conta["id"]) is None
+
+
+def test_registro_sem_verificacao_do_usuario_e_recusado(client, conta):
+    resposta = registrar(client, conta, SoftAuthenticator(user_verified=False))
+    assert resposta.status_code == 400
+    assert _credencial_no_banco(conta["id"]) is None
+
+
+def test_replay_com_contador_zero_so_e_barrado_pelo_desafio_de_uso_unico(client, conta):
+    autenticador = SoftAuthenticator(counts_up=False, sign_count=0)
+    registrar(client, conta, autenticador)
+    opcoes = client.post("/api/v1/auth/passkeys/login/options").json()
+    assercao = autenticador.get(opcoes)
+    assert client.post("/api/v1/auth/passkeys/login/verify", json={"credential": assercao}).status_code == 200
+    replay = client.post("/api/v1/auth/passkeys/login/verify", json={"credential": assercao})
+    assert replay.status_code == 400
+    assert replay.json()["code"] == "AUTH_006"
+    assert _credencial_no_banco(conta["id"]).counter == 0
+    assert _desafios(kind="login")[-1].used_at is not None
+
+
+def test_assercao_recusada_queima_o_desafio(client, conta):
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    impostor = SoftAuthenticator(
+        credential_id=autenticador.credential_id, user_handle=autenticador.user_handle
+    )
+    assert entrar(client, impostor).status_code == 400
+    assert _desafios(kind="login")[-1].used_at is not None
+
+
+def test_contador_que_nao_subiu_audita_com_o_dono_e_nao_mexe_na_credencial(client, conta):
+    autenticador = _registrar_com_contador(client, conta, 6)
+    antes = _credencial_no_banco(conta["id"])
+    assert entrar(client, autenticador, sign_count=6).status_code == 400
+    depois = _credencial_no_banco(conta["id"])
+    assert (depois.counter, depois.last_used_at) == (antes.counter, antes.last_used_at)
+    with get_sessionmaker()() as db:
+        auditoria = db.scalars(select(AuditLog).where(AuditLog.action == "PASSKEY_COUNTER_MISMATCH")).all()
+        eventos = db.scalars(
+            select(SecurityEvent).where(SecurityEvent.type == "PASSKEY_COUNTER_MISMATCH")
+        ).all()
+    assert [a.user_id for a in auditoria if a.details["credential"] == str(antes.id)] == [conta["id"]]
+    assert [e.user_id for e in eventos if e.details["credential"] == str(antes.id)] == [conta["id"]]
+
+
+@pytest.mark.parametrize(
+    "marcas",
+    [{"cross_origin": True}, {"top_origin": True}, {"cross_origin": True, "top_origin": True}],
+    ids=["so-crossOrigin", "so-topOrigin", "os-dois"],
+)
+def test_registro_e_login_recusam_crossorigin_e_toporigin_cada_um_sozinho(client, conta, marcas):
+    assert registrar(client, conta, SoftAuthenticator(), **marcas).status_code == 400
+    assert _credencial_no_banco(conta["id"]) is None
+    autenticador = SoftAuthenticator()
+    assert registrar(client, conta, autenticador).status_code == 201
+    resposta = entrar(client, autenticador, **marcas)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "AUTH_006"
+
+
+def test_login_com_passkey_ignora_o_bloqueio_da_senha_e_zera_o_bloqueio(client, conta):
+    # Decisão (README): a passkey é um fator forte e resistente a phishing; o bloqueio existe
+    # para barrar quem adivinha senha. Por isso o login com passkey passa e limpa o bloqueio.
+    from app.db.models import User
+
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    with get_sessionmaker()() as db:
+        usuario = db.get(User, conta["id"])
+        usuario.locked_until = datetime.now(UTC) + timedelta(minutes=15)
+        usuario.failed_login_count = 5
+        db.commit()
+    senha = client.post("/api/v1/auth/login", json={"email": conta["email"], "password": SENHA})
+    assert senha.status_code != 200  # o bloqueio vale para a senha
+    assert entrar(client, autenticador).status_code == 200
+    with get_sessionmaker()() as db:
+        usuario = db.get(User, conta["id"])
+        assert usuario.locked_until is None
+        assert usuario.failed_login_count == 0

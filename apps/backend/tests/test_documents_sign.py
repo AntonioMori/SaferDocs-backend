@@ -189,6 +189,36 @@ def test_conta_antiga_sem_chaves_ganha_o_par_na_primeira_assinatura(client, cont
         assert db.get(User, conta["user"].id).signing_cert is not None
 
 
+def test_duas_assinaturas_simultaneas_de_conta_antiga_geram_um_so_par_de_chaves(conta, fake_pdf_worker):
+    import threading
+
+    with get_sessionmaker()() as db:
+        user = db.get(User, conta["user"].id)
+        user.signing_cert = user.signing_public_key = user.signing_private_key_enc = None
+        db.commit()
+    respostas: list = [None, None]
+    largada = threading.Barrier(2)
+
+    def assinar_em_paralelo(indice: int) -> None:
+        cliente = TestClient(app)
+        largada.wait()
+        respostas[indice] = assinar(cliente, conta, make_pdf())
+
+    threads = [threading.Thread(target=assinar_em_paralelo, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+    assert [r.status_code for r in respostas] == [200, 200]
+    with get_sessionmaker()() as db:
+        registrada = db.get(User, conta["user"].id).signing_public_key
+    # As duas assinaturas valem para a chave que ficou registrada: ninguém a sobrescreveu.
+    for resposta in respostas:
+        sig, status = validar(resposta.content)
+        assert status.intact and status.valid
+        assert sig.signer_cert.public_key.dump() == registrada
+
+
 # --------------------------------------------------------------- selo (REQ-47)
 
 

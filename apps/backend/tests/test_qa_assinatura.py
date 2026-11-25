@@ -13,7 +13,13 @@ from asn1crypto import cms as asn1_cms
 from app.core.errors import AppError, ErrorCode
 from app.crypto.cms import build_signed_data
 from app.pdf import client as pdf_client
-from app.pdf.signature_bytes import SignatureBytesError, check_prepared, embed_cms, reserved_contents
+from app.pdf.signature_bytes import (
+    _BYTE_RANGE,
+    SignatureBytesError,
+    check_prepared,
+    embed_cms,
+    reserved_contents,
+)
 from app.services.user_keys import certificate_common_name, sign_with_user_key
 from tests.conftest import make_pdf, make_signer
 from tests.test_pdf_verify import assinar
@@ -209,3 +215,57 @@ def test_banco_nao_loga_parametros_das_consultas():
     from app.db.session import get_engine
 
     assert get_engine().hide_parameters is True
+
+
+# --------------------------------------------------------------- worker comprometido que recalcula o digest
+
+
+def _digest_coerente(pdf: bytes) -> str:
+    """Digest do que o último /ByteRange do arquivo declara cobrir (o que um worker esperto devolveria)."""
+    achados = list(_BYTE_RANGE.finditer(pdf))
+    inicio, fim, resto = (int(v) for v in achados[-1].groups())
+    return hashlib.sha256(pdf[:inicio] + pdf[fim : fim + resto]).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "alterar",
+    [
+        # original alterado, e o digest refeito sobre o arquivo alterado: só a conferência de prefixo pega
+        lambda r, c: (
+            {"digest": _digest_coerente(c.replace(b"/MediaBox", b"/MediaBoX", 1))},
+            c.replace(b"/MediaBox", b"/MediaBoX", 1),
+        ),
+        # bytes depois do /ByteRange, com o digest do que ele declara cobrir
+        lambda r, c: ({"digest": _digest_coerente(c)}, c + b"\n% extra\n"),
+    ],
+    ids=["original-alterado-digest-refeito", "bytes-extras-digest-refeito"],
+)
+def test_worker_que_refaz_o_digest_sobre_o_arquivo_alterado_tambem_e_recusado(
+    fake_pdf_worker, monkeypatch, alterar
+):
+    _worker_que_devolve(monkeypatch, alterar)
+    with pytest.raises(AppError) as erro:
+        _preparado()
+    assert erro.value.code == ErrorCode.INTERNAL
+
+
+def test_worker_que_devolve_o_byterange_antigo_com_digest_refeito_e_recusado(fake_pdf_worker, monkeypatch):
+    # O original já é assinado: o /ByteRange dele está na parte do original, não na acrescentada.
+    assinado, _ = assinar(make_pdf())
+    devolvido = assinado + b"\n"
+    _worker_que_devolve(monkeypatch, lambda r, c: ({"digest": _digest_coerente(devolvido)}, devolvido))
+    with pytest.raises(AppError) as erro:
+        _preparado(assinado)
+    assert erro.value.code == ErrorCode.INTERNAL
+
+
+# --------------------------------------------------------------- PDF assinado cortado
+
+
+def test_pdf_assinado_e_truncado_antes_do_byterange_e_adulterado_e_nao_pdf_invalido(fake_pdf_worker):
+    assinado, _ = assinar(make_pdf())
+    cortado = assinado[: len(assinado) // 2]
+    assert b"/ByteRange" not in cortado  # o corte pegou antes do /ByteRange
+    resultado = pdf_client.verify(cortado)
+    assert resultado.has_signature
+    assert not resultado.cms_valid

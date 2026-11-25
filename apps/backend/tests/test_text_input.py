@@ -136,3 +136,83 @@ def test_a_varredura_pega_sql_montado(tmp_path, monkeypatch):
     (pasta / "ruim.py").write_text("db.execute(text(f\"SELECT * FROM users WHERE email = '{email}'\"))\n")
     monkeypatch.setattr("tests.test_text_input.APP_DIR", pasta)
     assert _consultas_montadas_com_texto() == ["ruim.py:1"]
+
+
+# --------------------------------------------------------------- QA: invisíveis, vazios e emoji
+
+
+@pytest.mark.parametrize(
+    "texto",
+    [
+        ">",  # só o sinal
+        "a>b",
+        "＞",  # ＞ de largura cheia: o NFKC vira >
+        "AnaSouza",  # uso privado (Co)
+        "Ana͸Souza",  # não atribuído (Cn)
+        "Ana\ud800Souza",  # surrogate solto (Cs)
+        "Ana Souza",  # separador de linha (Zl)
+        "Ana Souza",  # separador de parágrafo (Zp)
+        "AnaㅤSouza",  # filler hangul
+        "AnaᅟSouza",
+        "AnaᅠSouza",
+        "AnaﾠSouza",
+        "Ana⠀Souza",  # braille vazio
+        "a‍b",  # ZWJ entre letras
+        "\U0001f468‍",  # ZWJ sem emoji depois
+        "‍\U0001f468",  # ZWJ sem emoji antes
+        "\U0001f468‍x",  # ZWJ antes de letra
+        "\U0001f468​\U0001f469",  # espaço de largura zero entre emoji (outro Cf)
+    ],
+    ids=lambda t: "-".join(f"{ord(c):x}" for c in t),
+)
+def test_clean_text_recusa_invisiveis_e_caracteres_proibidos(texto):
+    with pytest.raises(ValueError):
+        clean_text(texto, min_length=1, max_length=60)
+
+
+@pytest.mark.parametrize(
+    "texto",
+    ["ㅤ", "ㅤᅟᅠﾠ⠀", "⠀⠀⠀", " ", "     ", "́"],
+    ids=["filler", "so-fillers", "braille", "zl", "so-espacos", "so-acento-solto"],
+)
+def test_clean_text_recusa_nome_sem_caractere_visivel(texto):
+    with pytest.raises(ValueError):
+        clean_text(texto, min_length=1, max_length=60)
+
+
+def test_clean_text_aceita_emoji_com_zwj_e_variacoes():
+    familia = "\U0001f468‍\U0001f469‍\U0001f467"  # 👨‍👩‍👧
+    assert clean_text(familia, min_length=1, max_length=60) == familia
+    coracao = "❤️‍\U0001f525"  # ❤️‍🔥: VS16 antes do ZWJ
+    assert clean_text(coracao, min_length=1, max_length=60) == coracao
+    tom = "\U0001f468\U0001f3fd‍\U0001f4bb"  # 👨🏽‍💻
+    assert clean_text(tom, min_length=1, max_length=60) == tom
+    assert clean_text(f"Ana {familia}", min_length=1, max_length=60) == f"Ana {familia}"
+
+
+def test_clean_text_aceita_so_simbolo_ou_so_numero():
+    assert clean_text("\U0001f600", min_length=1, max_length=60) == "\U0001f600"
+    assert clean_text("123", min_length=1, max_length=60) == "123"
+
+
+@pytest.mark.parametrize("nome", [">", "a>b", "＞", "Ana", "Ana͸", "Ana ", "ㅤㅤ"])
+def test_cadastro_recusa_os_casos_da_qa(client, nome):
+    resposta = _cadastrar(client, nome)
+    assert resposta.status_code == 400
+    assert resposta.json()["fields"][0]["field"] == "name"
+
+
+def test_cadastro_aceita_emoji_de_familia_no_nome(client):
+    familia = "\U0001f468‍\U0001f469‍\U0001f467"
+    resposta = _cadastrar(client, f"Ana {familia}")
+    assert resposta.status_code == 201
+    assert resposta.json()["name"] == f"Ana {familia}"
+
+
+def test_surrogate_solto_no_json_e_recusado_sem_erro_500(client):
+    # "\ud800" escapado no JSON: se o parser deixar passar, o clean_text recusa; senão, é erro de corpo.
+    corpo = (r'{"name": "Ana\ud800", "email": "surr@teste.dev", "password": "' + SENHA + '"}').encode()
+    resposta = client.post(
+        "/api/v1/auth/register", content=corpo, headers={"content-type": "application/json"}
+    )
+    assert resposta.status_code == 400

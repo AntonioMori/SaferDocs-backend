@@ -247,12 +247,19 @@ Conferir com `curl -I http://localhost:8000/api/v1/health`.
 | `POST /auth/login` | e-mail normalizado (minúsculas, sem espaços) | `RATE_LIMIT_LOGIN_PER_ACCOUNT` (5/min) |
 | `POST /auth/login/totp` | IP | `RATE_LIMIT_LOGIN_PER_IP` |
 | `POST /verify` | IP | `RATE_LIMIT_VERIFY_PER_IP` (10/min) |
+| `POST /auth/passkeys/login/options` (escopo `passkey-login-options`) | IP | `RATE_LIMIT_LOGIN_PER_IP` |
+| `POST /auth/passkeys/login/verify` (escopo `passkey-login-verify`) | IP | `RATE_LIMIT_LOGIN_PER_IP` |
+| `POST /auth/passkeys/register/options` (escopo `passkey-register-options`) | usuário autenticado | `RATE_LIMIT_PASSKEY_REGISTER_PER_USER` (10/min) |
+| `POST /auth/passkeys/register/verify` (escopo `passkey-register-verify`) | usuário autenticado | `RATE_LIMIT_PASSKEY_REGISTER_PER_USER` |
 
 - O limite roda antes de qualquer consulta ou hash de senha: força bruta não vira negação de serviço por CPU.
 - A conta que não existe tem o mesmo limite da que existe, então o 429 não revela nada (REQ-04).
 - Requisição recusada não conta: quem insiste não estende o próprio bloqueio.
 - Com os valores padrão, o limite por conta (5/min) e o bloqueio da conta (REQ-03, 5 falhas) atuam juntos: depois da 5ª falha a conta fica bloqueada por 15 min, e a 6ª tentativa no mesmo minuto já recebe 429.
-- O estado fica em memória, porque a API roda num processo só. O total de chaves é limitado a 100 mil, para quem troca de IP ou de e-mail a cada pedido não esgotar a memória. Cada chave tem a própria janela, e só as chaves já expiradas, do início da fila LRU, são removidas para abrir espaço. Se a tabela estiver cheia de chaves ativas, o limitador falha fechado: recusa o pedido novo com 429 em vez de apagar o contador de alguém. O `Retry-After` vem do acerto que libera a vaga, e o relógio é lido dentro do lock. Com mais de um processo, o contador precisaria ir para o PostgreSQL ou um Redis.
+- O estado fica em memória, porque a API roda num processo só. O total de chaves é limitado a 100 mil, para quem troca de IP ou de e-mail a cada pedido não esgotar a memória. Cada chave tem a própria janela, e só as chaves já expiradas, achadas num lote do início da fila LRU (detalhes abaixo), são removidas para abrir espaço. Se a tabela estiver cheia de chaves ativas, o limitador falha fechado: recusa o pedido novo com 429 em vez de apagar o contador de alguém. O `Retry-After` vem do acerto que libera a vaga, e o relógio é lido dentro do lock. Com mais de um processo, o contador precisaria ir para o PostgreSQL ou um Redis.
+- **Passkeys:** `options` e `verify` têm escopos separados, mesmo com o mesmo limite. Um login com passkey gasta uma vaga em cada, e encher o `options` não trava o `verify` (e vice-versa). O registro de passkey é por usuário, não por IP, e também tem um escopo para cada rota.
+- **IPv6 por /64:** o IP vira a chave do limitador pela função `ip_bucket`: endereços IPv6 são agrupados pelo prefixo /64 (uma ligação residencial recebe um /64 inteiro, com 2^64 endereços), então quem troca só os últimos bits do endereço continua no mesmo balde e não enche a tabela. IPv4 conta pelo endereço; IPv6 mapeado (`::ffff:a.b.c.d`) conta como o IPv4; texto que não é IP fica como veio. O custo é que redes que dividem um /64 (raro) dividem o limite.
+- **Despejo com a tabela cheia:** a fila é por uso, não por expiração (cada escopo tem a própria janela), então uma chave expirada pode ficar atrás de uma ativa. Por isso, quando a tabela enche, o limitador examina um lote limitado (256 chaves) a partir da mais antiga e apaga as expiradas. Se nenhuma do lote expirou, falha fechado (429 para a chave nova). O custo por chamada é limitado e cada chave sai uma vez só. O limite conhecido: expiradas além do lote só saem quando chegarem ao início da fila, então uma tabela com mais de 256 chaves ativas à frente pode recusar uma chave nova mesmo havendo expiradas atrás. É a escolha por falhar fechado e barato, em vez de varrer 100 mil chaves a cada pedido.
 - O IP é o da conexão TCP (`request.client.host`), não um header que o cliente controle. Atrás de um proxy reverso, o uvicorn precisa de `--forwarded-allow-ips` só com o IP do proxy; senão todo mundo aparece com o IP do proxy e divide o mesmo limite.
 
 ## Upload e processamento de PDF (REQ-60 a 63)
@@ -295,7 +302,7 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
 
 **Registro (REQ-48):** cada assinatura grava em `signatures` o SHA-256 do original e do assinado, o usuário, a data e hora (a mesma do selo), o IP, o User-Agent e a posição do selo, e vai para a auditoria como `DOCUMENT_SIGNED` (falhas também, com o código do erro). O PDF só volta para o usuário depois do commit. `GET /api/v1/documents/signatures` lista as assinaturas do próprio usuário, só com metadados e hashes.
 
-**Posição (REQ-49):** `page` começa em 1; `x` e `y` são o canto inferior esquerdo do selo, em pontos PDF (1/72 de polegada), contados a partir do canto inferior esquerdo da página, mesmo quando o `/MediaBox` não começa em (0, 0). O selo inteiro (240 x 80) precisa caber na página escolhida; página inexistente ou selo saindo da página dão 400 `DOC_005`. A posição fica registrada com a assinatura.
+**Posição (REQ-49):** `page` começa em 1; `x` e `y` são o canto inferior esquerdo do selo, em pontos PDF (1/72 de polegada), contados a partir do canto inferior esquerdo da área visível da página (interseção do `/MediaBox` com o `/CropBox`), mesmo quando essa área não começa em (0, 0). O selo inteiro (240 x 80) precisa caber na área visível da página escolhida. Valor mal formado (não numérico, `1_0`, negativo, `page` menor que 1) dá 400 `VAL_001` (erro de validação). Só página que não existe ou selo que sai da área visível dão 400 `DOC_005`. A posição fica registrada com a assinatura.
 
 **Chave privada nunca exposta (REQ-59):** a privada decifrada só existe dentro de `sign_with_user_key`, num invólucro (`Redacted`) que mostra `<oculto>` em repr, str, f-string e log e não pode ir para pickle. Ela não vai para o worker, para a resposta nem para o log. Os schemas de resposta não têm campo de chave, e falha ao decifrar vira um 500 genérico. Um teste percorre o fluxo inteiro (cadastro, login, assinatura, histórico, erros) com o log em DEBUG e procura a chave em DER, PEM, hex, base64, o escalar e o texto cifrado.
 
@@ -303,7 +310,7 @@ A autenticação roda antes de ler o upload. PDF sem xref legível, que o leitor
 
 - **Área visível:** o tamanho da página usado na posição do selo é a interseção do `/MediaBox` com o `/CropBox`. Um `/CropBox` inválido é ignorado, e um que fica fora da página recusa o PDF. A rotação (`/Rotate`) é devolvida junto com o tamanho nas respostas `page_sizes` e `inspect`.
 - **Nome no certificado:** `certificate_common_name()` tira do nome os caracteres que o X.509 não aceita (os não atribuídos no Unicode 3.2, como emoji), corta em 64 caracteres e usa `SaferDocs` se não sobrar nada. Sem isso, o asn1crypto falhava no stringprep e o PDF válido saía como ADULTERADO.
-- **Posição estrita:** `page`, `x` e `y` só aceitam dígitos ASCII e um ponto decimal; `1_0`, `1e2`, espaços e dígitos de outros alfabetos dão 400 `DOC_005`.
+- **Posição estrita:** `page`, `x` e `y` só aceitam dígitos ASCII e um ponto decimal; `1_0`, `1e2`, espaços, números negativos e dígitos de outros alfabetos dão 400 `VAL_001` (validação), não `DOC_005`.
 - **Chave legada:** a geração do par na primeira assinatura trava a linha do usuário (`SELECT ... FOR UPDATE`) e confere de novo, para duas assinaturas simultâneas não criarem dois pares.
 - **Parâmetros fora do log:** o engine do SQLAlchemy usa `hide_parameters=True`, então um erro de SQL não imprime valores (e-mail, hashes, bytes cifrados) nos logs.
 
@@ -325,7 +332,7 @@ A autenticação roda antes de ler o upload. PDF sem xref legível, que o leitor
 
 ## Entradas de texto (REQ-64)
 
-Textos livres (hoje o nome do usuário) passam por `app/core/text_input.py`: normalização Unicode NFKC (letras de largura cheia e variantes "disfarçadas" viram a forma comum), recusa de `<` e `>`, de caracteres de controle (inclusive quebra de linha e tab) e de caracteres invisíveis (como o que inverte a direção do texto), e espaços repetidos viram um. Erros de validação não ecoam o valor enviado. Apóstrofos e aspas, comuns em nomes, são aceitos: contra injeção de SQL a proteção é que toda consulta passa pelo ORM com parâmetros. Um teste varre o código e falha se alguma consulta for montada com f-string, concatenação, `%` ou `.format()`.
+Textos livres (hoje o nome do usuário) passam por `app/core/text_input.py`: normalização Unicode NFKC (letras de largura cheia e variantes "disfarçadas" viram a forma comum), recusa de `<` e `>`, de caracteres de controle (inclusive quebra de linha e tab) e de caracteres invisíveis (como o que inverte a direção do texto), e espaços repetidos viram um. Também são recusados o que parece vazio e não é: separadores de linha e de parágrafo (U+2028 e U+2029), caracteres de preenchimento que não desenham nada (U+115F, U+1160, U+3164, U+FFA0 e U+2800), caracteres de uso privado, não atribuídos e surrogates soltos, e o texto sem nenhum caractere visível (é preciso ao menos uma letra, número, pontuação ou símbolo, o que inclui emoji). Os demais caracteres de formato (categoria Cf) continuam recusados, com uma exceção: o U+200D, que junta emoji (como em 👨‍👩‍👧), só passa quando o caractere antes dele (ou o seletor de variação U+FE0F que o segue) e o depois são emoji. Erros de validação não ecoam o valor enviado. Apóstrofos e aspas, comuns em nomes, são aceitos: contra injeção de SQL a proteção é que toda consulta passa pelo ORM com parâmetros. Um teste varre o código e falha se alguma consulta for montada com f-string, concatenação, `%` ou `.format()`.
 
 ## Proteção contra CSRF (REQ-65)
 
@@ -340,14 +347,14 @@ A requisição forjada é barrada antes da rota, então não gasta o refresh tok
 ## Dependências auditadas (REQ-66)
 
 - **Dependabot** (`.github/dependabot.yml`): abre PRs semanais com versões novas das dependências da API (`uv`), do pdf-worker (`pip`), das imagens Docker, do compose e das Actions.
-- **CI** (`.github/workflows/backend-ci.yml`): o job `audit` exporta as dependências travadas no `uv.lock` e roda `pip-audit --strict` nelas e nas do pdf-worker. O job falha se houver qualquer vulnerabilidade conhecida, e roda em todo PR, na `main` e toda segunda-feira (vulnerabilidades novas aparecem sem mudança no código). Os outros jobs rodam o `ruff`, a suíte com um PostgreSQL de serviço e os testes de Linux do pdf-worker.
+- **CI** (`.github/workflows/backend-ci.yml`): o job `audit` exporta as dependências travadas no `uv.lock` (só as de produção, `--no-dev`) e roda `pip-audit==2.10.1 --strict` (versão fixa) nelas e nas do pdf-worker. Todo job tem `timeout-minutes`, e uma nova execução na mesma ref cancela a anterior (`concurrency`). O job falha se houver qualquer vulnerabilidade conhecida, e roda em todo PR, na `main` e toda segunda-feira (vulnerabilidades novas aparecem sem mudança no código). Os outros jobs rodam o `ruff`, a suíte com um PostgreSQL de serviço e os testes de Linux do pdf-worker.
 - As versões do pdf-worker ficam fixas em `pdf_worker/requirements.txt`, porque ele lê PDFs vindos de fora.
 
 Para rodar a auditoria localmente:
 ```bash
-uv export --frozen --no-hashes --no-emit-project --format requirements-txt > /tmp/req.txt
-uvx pip-audit --strict -r /tmp/req.txt
-uvx pip-audit --strict -r pdf_worker/requirements.txt
+uv export --frozen --no-dev --no-hashes --no-emit-project --format requirements-txt > /tmp/req.txt
+uvx pip-audit==2.10.1 --strict -r /tmp/req.txt
+uvx pip-audit==2.10.1 --strict -r pdf_worker/requirements.txt
 ```
 
 ## Passkeys (REQ-06 a 10)
@@ -356,10 +363,10 @@ Implementadas com a biblioteca `webauthn` (py_webauthn), em `app/services/passke
 
 | Rota | Quem | O que faz |
 |---|---|---|
-| `POST /auth/passkeys/register/options` | autenticado | opções do `navigator.credentials.create` |
-| `POST /auth/passkeys/register/verify` | autenticado | `{credential, name?}`: confere e guarda o dispositivo (201) |
-| `POST /auth/passkeys/login/options` | público, com rate limit por IP | opções do `navigator.credentials.get`, sem e-mail |
-| `POST /auth/passkeys/login/verify` | público, com rate limit por IP | `{credential}`: confere e faz o login (como o login com senha) |
+| `POST /auth/passkeys/register/options` | autenticado, com rate limit por usuário | opções do `navigator.credentials.create` |
+| `POST /auth/passkeys/register/verify` | autenticado, com rate limit por usuário | `{credential, name?}`: confere e guarda o dispositivo (201) |
+| `POST /auth/passkeys/login/options` | público, com rate limit por IP (escopo próprio) | opções do `navigator.credentials.get`, sem e-mail |
+| `POST /auth/passkeys/login/verify` | público, com rate limit por IP (escopo próprio) | `{credential}`: confere e faz o login (como o login com senha) |
 | `GET /auth/passkeys` | autenticado | lista os dispositivos do próprio usuário |
 | `PUT /auth/passkeys/{id}` | autenticado, só o dono | `{name}`: renomeia o dispositivo |
 | `DELETE /auth/passkeys/{id}` | autenticado, só o dono | revoga o dispositivo (204) |
@@ -367,6 +374,9 @@ Implementadas com a biblioteca `webauthn` (py_webauthn), em `app/services/passke
 - **Desafio:** 32 bytes aleatórios, guardado no banco, de uso único (queimado antes de conferir a resposta) e válido por 5 minutos. Desafio de registro não serve para login e vice-versa.
 - **Passkey de verdade:** credencial descobrível (o login não pede e-mail) e verificação do usuário (biometria ou PIN) exigida. Por isso a passkey dispensa senha e TOTP e termina no mesmo fluxo do login com senha: sessão, access token, cookie de refresh, auditoria e aviso de IP novo.
 - **Falhas:** toda falha de cerimônia vira 400 `AUTH_006`, sem dizer o motivo, e o motivo vai para a auditoria.
+- **Bloqueio da conta (`locked_until`):** decisão consciente: o login com passkey ignora o bloqueio causado por tentativas erradas de senha, e ao terminar zera o bloqueio e o contador de falhas, como todo login bem-sucedido. O bloqueio existe para barrar quem adivinha senha, e a passkey é um fator forte e resistente a phishing (chave privada no dispositivo, verificação do usuário exigida, atrelada à origem), então quem a usa não está chutando senha. Quem quer fechar a conta de vez revoga as passkeys (REQ-10). Um teste mostra o comportamento.
+- **Limpeza de desafios:** ao criar um desafio novo, os expirados há mais de 1 dia são apagados num único `DELETE`, para a tabela não crescer sem fim.
+- **Registro:** a linha do usuário é travada (`SELECT ... FOR UPDATE`) antes de conferir duplicata e o limite de 20 passkeys por usuário, e uma violação de unicidade no commit (corrida entre dois registros) vira falha de cerimônia (400 `AUTH_006`, motivo `duplicate`), não 500. De `transports` só ficam os valores do WebAuthn (`usb`, `nfc`, `ble`, `internal`, `hybrid`, `smart-card`, `cable`); o resto é descartado.
 - **Dados do dispositivo (REQ-07):** cada passkey guarda `credential_id`, `public_key`, `counter` e `aaguid` (os quatro campos do requisito), mais nome amigável (padrão "Passkey", normalizado por `clean_text`, até 60 caracteres), `transports`, `created_at` e `last_used_at` (atualizado a cada login). A resposta da API traz só os campos públicos: nunca `public_key`, `counter` nem `credential_id`.
 - **Contador de uso (REQ-08):** regra explícita no service (`_counter_is_valid`), sem depender da biblioteca (que recebe contador atual 0). Guardado 0 e recebido 0 passa, porque passkey sincronizada sempre manda 0. Fora isso, o recebido precisa ser maior que o guardado (5 para 6 passa; 6 para 6 e 6 para 3 não). Se não for, o login é recusado (400 `AUTH_006`), o contador guardado não muda, e a rejeição vai para o audit log (`PASSKEY_COUNTER_MISMATCH`) e vira um evento de segurança para o dono da conta, pois pode ser clonagem.
 - **Origin e rpId (REQ-09):** `WEBAUTHN_RP_ID` (domínio exato da aplicação) e `WEBAUTHN_ORIGIN` vêm do `.env` (`localhost` em dev, o domínio do deploy em produção) e são obrigatórios. Toda cerimônia, de registro e de login, confere a origin exata (esquema, host e porta) e o hash do rpId. A biblioteca não olha `crossOrigin`, então o service recusa também a cerimônia feita dentro de iframe de outro site (`crossOrigin` verdadeiro ou `topOrigin` presente). Tudo vira 400 `AUTH_006`, e o motivo vai para a auditoria.
