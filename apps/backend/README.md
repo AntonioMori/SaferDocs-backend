@@ -350,6 +350,23 @@ uvx pip-audit --strict -r /tmp/req.txt
 uvx pip-audit --strict -r pdf_worker/requirements.txt
 ```
 
+## Passkeys (REQ-06 a 10)
+
+Implementadas com a biblioteca `webauthn` (py_webauthn), em `app/services/passkey_service.py`.
+
+| Rota | Quem | O que faz |
+|---|---|---|
+| `POST /auth/passkeys/register/options` | autenticado | opções do `navigator.credentials.create` |
+| `POST /auth/passkeys/register/verify` | autenticado | `{credential, name?}`: confere e guarda o dispositivo (201) |
+| `POST /auth/passkeys/login/options` | público, com rate limit por IP | opções do `navigator.credentials.get`, sem e-mail |
+| `POST /auth/passkeys/login/verify` | público, com rate limit por IP | `{credential}`: confere e faz o login (como o login com senha) |
+
+- **Desafio:** 32 bytes aleatórios, guardado no banco, de uso único (queimado antes de conferir a resposta) e válido por 5 minutos. Desafio de registro não serve para login e vice-versa.
+- **Passkey de verdade:** credencial descobrível (o login não pede e-mail) e verificação do usuário (biometria ou PIN) exigida. Por isso a passkey dispensa senha e TOTP e termina no mesmo fluxo do login com senha: sessão, access token, cookie de refresh, auditoria e aviso de IP novo.
+- **Falhas:** toda falha de cerimônia vira 400 `AUTH_006`, sem dizer o motivo, e o motivo vai para a auditoria.
+- **Corpo das rotas:** schemas tipados e com limites de tamanho, em vez de JSON livre.
+- **Testes:** usam um autenticador WebAuthn de software (`tests/webauthn_soft.py`) que gera atestados e asserções reais.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
