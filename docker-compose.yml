@@ -3,7 +3,7 @@ services:
   # Banco de dados PostgreSQL (credenciais vêm do apps/backend/.env)
   # ---------------------------------------------------------------------------
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     env_file:
       - path: ./apps/backend/.env
@@ -95,7 +95,7 @@ services:
   #   docker compose --profile test up -d db-test
   # ---------------------------------------------------------------------------
   db-test:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     profiles: ["test"]
     environment:
       POSTGRES_USER: ${TEST_POSTGRES_USER:-saferdocs}
