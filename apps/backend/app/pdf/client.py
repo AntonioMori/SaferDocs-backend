@@ -26,10 +26,11 @@ As funções são síncronas (socket bloqueante, até PDF_WORKER_TIMEOUT_SECONDS
 Numa rota `async def`, chame com `await run_in_threadpool(inspect, pdf)` para
 não travar o event loop; numa rota `def` o FastAPI já usa o threadpool.
 
-`prepare_sign`, `finish_sign` e `verify` ainda são stubs depois do `inspect`;
-a implementação real entra com o REQ-46 e o REQ-50 (dono: v1ct0rjoao).
+`verify` ainda é stub depois do `inspect`; a implementação real entra com o
+REQ-50 (dono: v1ct0rjoao).
 """
 
+import base64
 import logging
 import socket
 from dataclasses import dataclass
@@ -135,14 +136,35 @@ def inspect(pdf: bytes) -> PdfInfo:
 def prepare_sign(
     pdf: bytes, *, page: int, x: float, y: float, seal_lines: list[str], signer_cert_pem: bytes
 ) -> PreparedSignature:
-    inspect(pdf)  # REQ-62/63: o PDF passa pelo worker antes de qualquer outra coisa
-    del page, x, y, seal_lines, signer_cert_pem  # STUB até o REQ-46
-    return PreparedSignature(prepared_pdf=pdf, digest=b"\x00" * 32)
+    """Worker: desenha o selo, reserva o /Contents e devolve o digest a assinar (REQ-46).
+
+    A chave privada não vai para o worker: só o certificado (público) do assinante.
+    """
+    args = {
+        "page": page,
+        "x": x,
+        "y": y,
+        "seal_lines": seal_lines,
+        "signer_cert_pem": signer_cert_pem.decode("ascii"),
+    }
+    result, prepared_pdf = _call("prepare_sign", args, pdf)
+    try:
+        digest = bytes.fromhex(result["digest"])
+    except (KeyError, TypeError, ValueError):
+        digest = b""
+    if len(digest) != 32 or not prepared_pdf.startswith(b"%PDF-"):
+        logger.error("pdf-worker devolveu um prepare_sign fora do formato")
+        raise AppError(ErrorCode.INTERNAL)
+    return PreparedSignature(prepared_pdf=prepared_pdf, digest=digest)
 
 
 def finish_sign(prepared_pdf: bytes, cms: bytes) -> bytes:
-    del cms  # STUB até o REQ-46
-    return prepared_pdf
+    """Worker: escreve o CMS no /Contents reservado e devolve o PDF assinado (REQ-46)."""
+    _, signed_pdf = _call("finish_sign", {"cms": base64.b64encode(cms).decode("ascii")}, prepared_pdf)
+    if len(signed_pdf) != len(prepared_pdf):
+        logger.error("pdf-worker devolveu um finish_sign fora do formato")
+        raise AppError(ErrorCode.INTERNAL)
+    return signed_pdf
 
 
 def verify(pdf: bytes) -> VerificationResult:

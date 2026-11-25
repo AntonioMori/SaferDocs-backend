@@ -14,6 +14,7 @@ import pytest
 from app.core.errors import AppError, ErrorCode
 from app.pdf import client as pdf_client
 from pdf_worker import protocol, task
+from tests.conftest import make_signer
 
 PAGE = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>"
 PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
@@ -179,7 +180,9 @@ def test_api_recusa_javascript_na_assinatura_e_na_verificacao(fake_pdf_worker):
     pdf = raw_pdf(COM_JAVASCRIPT["open-action"])
     for chamada in (
         lambda: pdf_client.inspect(pdf),
-        lambda: pdf_client.prepare_sign(pdf, page=1, x=0, y=0, seal_lines=[], signer_cert_pem=b""),
+        lambda: pdf_client.prepare_sign(
+            pdf, page=1, x=0, y=0, seal_lines=["x"], signer_cert_pem=make_signer()[1]
+        ),
         lambda: pdf_client.verify(pdf),
     ):
         with pytest.raises(AppError) as erro:
