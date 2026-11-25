@@ -337,6 +337,19 @@ Textos livres (hoje o nome do usuário) passam por `app/core/text_input.py`: nor
 
 A requisição forjada é barrada antes da rota, então não gasta o refresh token legítimo. Ordem dos middlewares, de fora para dentro: `request_id -> security_headers -> CORS -> CSRF -> unhandled_errors -> rotas`.
 
+## Dependências auditadas (REQ-66)
+
+- **Dependabot** (`.github/dependabot.yml`): abre PRs semanais com versões novas das dependências da API (`uv`), do pdf-worker (`pip`), das imagens Docker, do compose e das Actions.
+- **CI** (`.github/workflows/backend-ci.yml`): o job `audit` exporta as dependências travadas no `uv.lock` e roda `pip-audit --strict` nelas e nas do pdf-worker. O job falha se houver qualquer vulnerabilidade conhecida, e roda em todo PR, na `main` e toda segunda-feira (vulnerabilidades novas aparecem sem mudança no código). Os outros jobs rodam o `ruff`, a suíte com um PostgreSQL de serviço e os testes de Linux do pdf-worker.
+- As versões do pdf-worker ficam fixas em `pdf_worker/requirements.txt`, porque ele lê PDFs vindos de fora.
+
+Para rodar a auditoria localmente:
+```bash
+uv export --frozen --no-hashes --no-emit-project --format requirements-txt > /tmp/req.txt
+uvx pip-audit --strict -r /tmp/req.txt
+uvx pip-audit --strict -r pdf_worker/requirements.txt
+```
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash

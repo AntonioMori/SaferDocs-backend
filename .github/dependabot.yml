@@ -1,0 +1,38 @@
+# Dependências atualizadas (REQ-66): o Dependabot abre PRs com as versões novas,
+# e o CI (backend-ci.yml) roda o pip-audit em cada um.
+version: 2
+updates:
+  # API (pyproject.toml + uv.lock)
+  - package-ecosystem: "uv"
+    directory: "/apps/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels: ["entrada-csrf"]
+
+  # pdf-worker: a biblioteca que lê PDFs de fora é a maior superfície de ataque
+  - package-ecosystem: "pip"
+    directory: "/apps/backend/pdf_worker"
+    schedule:
+      interval: "weekly"
+    labels: ["entrada-csrf"]
+
+  # Imagens base dos containers
+  - package-ecosystem: "docker"
+    directories: ["/apps/backend", "/apps/backend/pdf_worker"]
+    schedule:
+      interval: "weekly"
+    labels: ["entrada-csrf"]
+
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["entrada-csrf"]
+
+  # Actions usadas no CI
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["entrada-csrf"]
