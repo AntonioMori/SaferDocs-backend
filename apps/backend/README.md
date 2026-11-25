@@ -299,6 +299,20 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
 
 A autenticação roda antes de ler o upload. Se o leitor do pyHanko recusar o arquivo (por exemplo, xref ausente que o qpdf consegue reconstruir), o worker assina a versão regravada pelo qpdf.
 
+## Verificação de documentos (REQ-50 a 54)
+
+`POST /api/v1/verify` é pública (multipart com `file`) e devolve um de três resultados, seguindo a Figura 8:
+
+| Situação | Resposta |
+|---|---|
+| Sem assinatura embutida (um selo só desenhado não conta) | `{"status": "NAO_ENCONTRADA"}` |
+| Assinatura inválida, que não cobre o arquivo inteiro (revisão acrescentada depois de assinar) ou com hash que não bate com o registrado | `{"status": "ADULTERADO"}` |
+| Assinatura válida, cobrindo o arquivo inteiro, com o SHA-256 registrado e a chave pública do usuário que assinou | `{"status": "INTEGRO", "signer_name", "signed_at", "signature_id"}` |
+
+- **Verificação criptográfica (REQ-50):** o worker valida a assinatura mais recente com o pyHanko. Ele confere que o CMS bate com os bytes do `/ByteRange` e que a assinatura cobre o arquivo inteiro, e devolve a chave pública do certificado embutido. O PDF nunca é regravado na verificação.
+- **Comparação dos hashes (REQ-51):** o SHA-256 do arquivo é buscado em `signatures.signed_sha256`, e o registro só vale se a chave do certificado embutido for a do usuário que assinou.
+- **Auditoria:** toda verificação vai para ela como `DOCUMENT_VERIFIED`, sem usuário, com o resultado (e o id da assinatura, quando íntegro).
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash

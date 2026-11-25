@@ -7,7 +7,7 @@ prefixo `/api/v2`, convivendo com esta (ver RNF-17 no README).
 
 from fastapi import APIRouter
 
-from app.api.v1.routes import auth, documents, health, security, sessions, twofa
+from app.api.v1.routes import auth, documents, health, security, sessions, twofa, verify
 
 API_V1_PREFIX = "/api/v1"
 
@@ -18,3 +18,4 @@ api_router.include_router(twofa.router)
 api_router.include_router(sessions.router)
 api_router.include_router(security.router)
 api_router.include_router(documents.router)
+api_router.include_router(verify.router)
