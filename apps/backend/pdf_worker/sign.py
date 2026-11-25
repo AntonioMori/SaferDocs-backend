@@ -119,7 +119,10 @@ def prepare_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], byte
         field_name = f"{FIELD_PREFIX}-{uuid.uuid4().hex}"  # único: o PDF pode ter outras assinaturas
         meta = signers.PdfSignatureMetadata(field_name=field_name, md_algorithm="sha256")
         style = TextStampStyle(stamp_text=stamp_text)
-        spec = fields.SigFieldSpec(field_name, on_page=page - 1, box=(x, y, x + SEAL_WIDTH, y + SEAL_HEIGHT))
+        # (x, y) é relativo ao canto inferior esquerdo da página, mesmo que o MediaBox não comece em 0.
+        left, bottom = x + size["left"], y + size["bottom"]
+        box = (left, bottom, left + SEAL_WIDTH, bottom + SEAL_HEIGHT)
+        spec = fields.SigFieldSpec(field_name, on_page=page - 1, box=box)
         pdf_signer = signers.PdfSigner(meta, signer=signer, stamp_style=style, new_field_spec=spec)
         writer = _incremental_writer(pdf)
         prepared, _, output = await pdf_signer.async_digest_doc_for_signing(
