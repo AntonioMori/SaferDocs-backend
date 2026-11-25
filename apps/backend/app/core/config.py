@@ -184,6 +184,8 @@ class Settings(BaseSettings):
     def _validate_rate_limit(cls, value: str) -> str:
         if not RATE_LIMIT_PATTERN.match(value):
             raise ValueError("formato esperado: <quantidade>/<second|minute|hour>")
+        if int(value.split("/", 1)[0]) < 1:
+            raise ValueError("a quantidade precisa ser pelo menos 1")
         return value
 
     @field_validator("webauthn_rp_id")
