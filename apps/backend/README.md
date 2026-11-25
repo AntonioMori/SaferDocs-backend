@@ -327,6 +327,16 @@ A autenticação roda antes de ler o upload. PDF sem xref legível, que o leitor
 
 Textos livres (hoje o nome do usuário) passam por `app/core/text_input.py`: normalização Unicode NFKC (letras de largura cheia e variantes "disfarçadas" viram a forma comum), recusa de `<` e `>`, de caracteres de controle (inclusive quebra de linha e tab) e de caracteres invisíveis (como o que inverte a direção do texto), e espaços repetidos viram um. Erros de validação não ecoam o valor enviado. Apóstrofos e aspas, comuns em nomes, são aceitos: contra injeção de SQL a proteção é que toda consulta passa pelo ORM com parâmetros. Um teste varre o código e falha se alguma consulta for montada com f-string, concatenação, `%` ou `.format()`.
 
+## Proteção contra CSRF (REQ-65)
+
+`app/middlewares/csrf.py` confere a origem de todo POST, PUT, PATCH e DELETE. Usamos a verificação de `Origin`/`Referer` (e não Double Submit Cookie) porque o REQ-33 não deixa espaço para um header de token CSRF.
+
+1. Com `Origin`, ele precisa estar em `CORS_ALLOWED_ORIGINS`. `null`, repetido ou de outro site dá 403 `AUTH_009`.
+2. Sem `Origin`, vale a origem do `Referer`, com a mesma regra.
+3. Sem nenhum dos dois, a requisição só passa se não trouxer cookie. Um cliente de API que usa só o Bearer não é alvo de CSRF, porque o token não vai sozinho. Já um pedido com o cookie de refresh e sem origem verificável é recusado.
+
+A requisição forjada é barrada antes da rota, então não gasta o refresh token legítimo. Ordem dos middlewares, de fora para dentro: `request_id -> security_headers -> CORS -> CSRF -> unhandled_errors -> rotas`.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
