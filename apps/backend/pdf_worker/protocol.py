@@ -102,5 +102,14 @@ def reader_from_socket(sock: Any) -> Callable[[int], bytes]:
     return read_exact
 
 
+# Selo de assinatura (REQ-47/49): tamanho fixo, em pontos PDF; (x, y) é o canto
+# inferior esquerdo, com a origem embaixo à esquerda da página. Usado pela API
+# para validar a posição e pelo worker para desenhar.
+SEAL_WIDTH = 240
+SEAL_HEIGHT = 80
+MAX_SEAL_LINES = 6
+MAX_SEAL_LINE_LENGTH = 100
+
+
 def error(code: str) -> bytes:
     return encode({"ok": False, "error": code})

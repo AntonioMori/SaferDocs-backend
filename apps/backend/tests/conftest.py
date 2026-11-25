@@ -105,6 +105,22 @@ def _zera_rate_limit():
     reset_rate_limits()
 
 
+def make_signer():
+    """Usuário só em memória, com par de chaves de verdade (REQ-45), para testar a assinatura."""
+    import uuid as _uuid
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+
+    from app.db.models import User
+    from app.services.user_keys import generate_user_keys
+
+    user = User(id=_uuid.uuid4(), name="Teste", email="teste@teste.dev", password_hash="!")
+    generate_user_keys(None, user)  # type: ignore[arg-type]
+    pem = x509.load_der_x509_certificate(user.signing_cert).public_bytes(serialization.Encoding.PEM)
+    return user, pem
+
+
 def make_pdf(pages: int = 1, size: tuple[float, float] = (595, 842)) -> bytes:
     """PDF válido de verdade, gerado com o pikepdf (dependência só de teste)."""
     import io

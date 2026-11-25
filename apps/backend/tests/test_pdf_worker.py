@@ -19,7 +19,7 @@ import pytest
 from app.core.errors import AppError, ErrorCode
 from app.pdf import client as pdf_client
 from pdf_worker import protocol, task
-from tests.conftest import make_pdf
+from tests.conftest import make_pdf, make_signer
 
 BACKEND = Path(__file__).resolve().parent.parent
 
@@ -156,7 +156,9 @@ def test_sign_e_verify_passam_pelo_worker_antes_de_tudo(fake_pdf_worker):
         pdf_client.verify(b"%PDF-1.7\nquebrado")
     assert erro.value.code == ErrorCode.DOC_UNPROCESSABLE
     with pytest.raises(AppError) as erro:
-        pdf_client.prepare_sign(b"%PDF-1.7\nquebrado", page=1, x=0, y=0, seal_lines=[], signer_cert_pem=b"")
+        pdf_client.prepare_sign(
+            b"%PDF-1.7\nquebrado", page=1, x=0, y=0, seal_lines=["x"], signer_cert_pem=make_signer()[1]
+        )
     assert erro.value.code == ErrorCode.DOC_UNPROCESSABLE
     assert len(fake_pdf_worker) == 2
 

@@ -83,9 +83,8 @@ def _page_size(page: pikepdf.Dictionary) -> tuple[float, float]:
     raise OpError(ERR_UNPROCESSABLE)
 
 
-def inspect(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
-    """Abre o PDF e devolve o tamanho de cada página (usado para validar a posição do selo)."""
-    del args
+def page_sizes(pdf: bytes) -> list[dict[str, float]]:
+    """Abre o PDF (com a recusa de JavaScript) e devolve largura e altura de cada página."""
     document, warnings = open_pdf(pdf)
     with document:
         try:
@@ -102,15 +101,33 @@ def inspect(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
                 raise OpError(ERR_UNPROCESSABLE)
         except (pikepdf.PdfError, ValueError, TypeError, KeyError):
             raise OpError(ERR_UNPROCESSABLE) from None
+    return pages
+
+
+def inspect(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
+    """Abre o PDF e devolve o tamanho de cada página (usado para validar a posição do selo)."""
+    del args
+    pages = page_sizes(pdf)
     return {"page_count": len(pages), "pages": pages}, b""
 
 
-OPERATIONS: dict[str, Callable[[bytes, dict[str, Any]], tuple[dict[str, Any], bytes]]] = {
-    "inspect": inspect,
-}
+def _operations() -> dict[str, Callable[[bytes, dict[str, Any]], tuple[dict[str, Any], bytes]]]:
+    from pdf_worker import sign  # importa o pyHanko só quando a operação é de assinatura
+
+    return {
+        "inspect": inspect,
+        "prepare_sign": sign.prepare_sign,
+        "finish_sign": sign.finish_sign,
+    }
+
+
+OPERATIONS: dict[str, Callable[[bytes, dict[str, Any]], tuple[dict[str, Any], bytes]]] = {"inspect": inspect}
 
 
 def run(op: Any, args: Any, pdf: bytes) -> tuple[dict[str, Any], bytes]:
-    if not isinstance(op, str) or op not in OPERATIONS or not isinstance(args, dict):
+    if not isinstance(op, str) or not isinstance(args, dict):
         raise OpError(ERR_BAD_REQUEST)
-    return OPERATIONS[op](pdf, args)
+    operation = OPERATIONS.get(op) or _operations().get(op)
+    if operation is None:
+        raise OpError(ERR_BAD_REQUEST)
+    return operation(pdf, args)
