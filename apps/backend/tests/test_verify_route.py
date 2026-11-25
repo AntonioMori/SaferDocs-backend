@@ -132,3 +132,64 @@ def test_toda_verificacao_vai_para_a_auditoria_sem_usuario(client, assinado):
         {"status": "NAO_ENCONTRADA"},
     ]
     assert all(r.user_id is None and r.result == "SUCCESS" for r in registros)
+
+
+# --------------------------------------------------------------- rate limit (REQ-53)
+
+
+def test_excesso_de_verificacoes_por_ip_recebe_429(client, fake_pdf_worker, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "rate_limit_verify_per_ip", "3/minute")
+    respostas = [verificar(client, make_pdf()) for _ in range(4)]
+    assert [r.status_code for r in respostas] == [200, 200, 200, 429]
+    assert respostas[3].json()["code"] == "RATE_001"
+    assert int(respostas[3].headers["retry-after"]) >= 1
+
+
+def test_rate_limit_da_verificacao_barra_antes_de_ler_o_upload(client, monkeypatch):
+    import asyncio
+
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "rate_limit_verify_per_ip", "1/minute")
+    from app.middlewares.rate_limit import check_rate_limit
+
+    check_rate_limit("verify", "127.0.0.1", "1/minute")  # gasta a única vaga do IP
+    lidos = 0
+
+    async def receive():
+        nonlocal lidos
+        lidos += 1
+        return {"type": "http.request", "body": b"x" * 1024 * 1024, "more_body": lidos < 30}
+
+    enviados: list[dict] = []
+
+    async def send(message):
+        enviados.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/v1/verify",
+        "raw_path": b"/api/v1/verify",
+        "query_string": b"",
+        "headers": [(b"content-type", b"multipart/form-data; boundary=b")],
+        "client": ("127.0.0.1", 5000),
+        "server": ("testserver", 80),
+    }
+    asyncio.run(app(scope, receive, send))
+    assert next(m["status"] for m in enviados if m["type"] == "http.response.start") == 429
+    assert lidos <= 1
+
+
+def test_limite_da_verificacao_nao_divide_vaga_com_o_login(client, fake_pdf_worker, monkeypatch):
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "rate_limit_verify_per_ip", "1/minute")
+    monkeypatch.setattr(get_settings(), "rate_limit_login_per_ip", "1/minute")
+    client.post("/api/v1/auth/login", json={"email": "a@teste.dev", "password": "x"})
+    assert verificar(client, make_pdf()).status_code == 200
