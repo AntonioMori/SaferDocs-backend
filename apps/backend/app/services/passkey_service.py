@@ -59,7 +59,7 @@ def _now() -> datetime:
 
 
 def _fail(db: Session, request: Request, user_id: uuid.UUID | None, reason: str) -> AppError:
-    """Falha de cerimônia: vai para a auditoria e vira ErrorCode.AUTH_PASSKEY_FAILED, sem dizer o motivo ao cliente."""
+    """Falha de cerimônia: vai para a auditoria e vira ErrorCode.AUTH_PASSKEY_FAILED, sem o motivo."""
     db.rollback()
     audit.record(
         db,
