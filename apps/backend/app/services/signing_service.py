@@ -28,6 +28,7 @@ from app.services.user_keys import generate_user_keys, sign_with_user_key
 
 MAX_PAGE = 100_000
 MAX_COORDINATE = 14_400  # maior página que o PDF permite
+MAX_SEAL_NAME = 34  # "Assinado por: " + nome cabe numa linha do selo
 
 
 @dataclass(frozen=True)
@@ -70,9 +71,21 @@ def parse_position(fields: dict[str, str]) -> SealPosition:
 def seal_lines(
     user: User, signature_id: uuid.UUID, signed_at: dt.datetime, original_sha256: str
 ) -> list[str]:
-    """Texto do selo visual."""
-    del signature_id, signed_at, original_sha256  # completados no REQ-47
-    return [f"Assinado digitalmente por {user.name}"[:100]]
+    """Texto do selo visual (REQ-47): quem, quando (UTC), hash do original e id da assinatura.
+
+    O selo tem 240 pt de largura: cada linha cabe em ~45 caracteres. O SHA-256
+    vai inteiro, em duas linhas, para poder ser conferido sem outra ferramenta.
+    """
+    name = " ".join((user.name or "").split())  # sem quebras de linha nem espaços repetidos
+    if len(name) > MAX_SEAL_NAME:
+        name = name[: MAX_SEAL_NAME - 3] + "..."
+    return [
+        f"Assinado por: {name}",
+        f"Em: {signed_at.astimezone(dt.UTC):%Y-%m-%d %H:%M:%S} UTC",
+        f"SHA-256: {original_sha256[:32]}",
+        f"         {original_sha256[32:]}",
+        f"ID: {signature_id}",
+    ]
 
 
 def _signer_cert_pem(db: Session, user: User) -> bytes:
