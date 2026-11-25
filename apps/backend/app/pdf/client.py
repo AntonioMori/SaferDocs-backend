@@ -26,8 +26,7 @@ As funções são síncronas (socket bloqueante, até PDF_WORKER_TIMEOUT_SECONDS
 Numa rota `async def`, chame com `await run_in_threadpool(inspect, pdf)` para
 não travar o event loop; numa rota `def` o FastAPI já usa o threadpool.
 
-`verify` ainda é stub depois do `inspect`; a implementação real entra com o
-REQ-50 (dono: v1ct0rjoao).
+As quatro operações são reais: `inspect`, `prepare_sign`, `finish_sign` e `verify`.
 """
 
 import base64
@@ -168,11 +167,17 @@ def finish_sign(prepared_pdf: bytes, cms: bytes) -> bytes:
 
 
 def verify(pdf: bytes) -> VerificationResult:
-    inspect(pdf)  # REQ-62/63: o PDF passa pelo worker antes de qualquer outra coisa
-    return VerificationResult(  # STUB até o REQ-50
-        has_signature=False,
-        cms_valid=False,
-        covers_whole_file=False,
-        signer_public_key_der=None,
-        signature_id=None,
-    )
+    """Worker: confere a assinatura embutida mais recente (REQ-50). Não regrava o PDF."""
+    result, _ = _call("verify", {}, pdf)
+    try:
+        key_b64 = result["signer_public_key_der"]
+        return VerificationResult(
+            has_signature=result["has_signature"] is True,
+            cms_valid=result["cms_valid"] is True,
+            covers_whole_file=result["covers_whole_file"] is True,
+            signer_public_key_der=base64.b64decode(key_b64, validate=True) if key_b64 else None,
+            signature_id=None,  # o id vem do registro no banco (REQ-51)
+        )
+    except (KeyError, TypeError, ValueError):
+        logger.error("pdf-worker devolveu um verify fora do formato")
+        raise AppError(ErrorCode.INTERNAL) from None
