@@ -237,6 +237,24 @@ O `Cache-Control: no-store` (REQ-43) vale para toda a API, e não só para as ro
 
 Conferir com `curl -I http://localhost:8000/api/v1/health`.
 
+## Rate limiting (REQ-05 e 53)
+
+`app/middlewares/rate_limit.py` limita requisições numa janela deslizante em memória, por escopo e chave. Ao estourar, a resposta é 429 `RATE_001` com `Retry-After`, que o front consegue ler (o header está exposto no CORS).
+
+| Onde | Chave | Limite (`.env`) |
+|---|---|---|
+| `POST /auth/login` | IP | `RATE_LIMIT_LOGIN_PER_IP` (10/min) |
+| `POST /auth/login` | e-mail normalizado (minúsculas, sem espaços) | `RATE_LIMIT_LOGIN_PER_ACCOUNT` (5/min) |
+| `POST /auth/login/totp` | IP | `RATE_LIMIT_LOGIN_PER_IP` |
+| `POST /verify` | IP | `RATE_LIMIT_VERIFY_PER_IP` (10/min) |
+
+- O limite roda antes de qualquer consulta ou hash de senha: força bruta não vira negação de serviço por CPU.
+- A conta que não existe tem o mesmo limite da que existe, então o 429 não revela nada (REQ-04).
+- Requisição recusada não conta: quem insiste não estende o próprio bloqueio.
+- Com os valores padrão, o limite por conta (5/min) e o bloqueio da conta (REQ-03, 5 falhas) atuam juntos: depois da 5ª falha a conta fica bloqueada por 15 min, e a 6ª tentativa no mesmo minuto já recebe 429.
+- O estado fica em memória, porque a API roda num processo só. O total de chaves é limitado a 100 mil, para quem troca de IP ou de e-mail a cada pedido não esgotar a memória. Com mais de um processo, o contador precisaria ir para o PostgreSQL ou um Redis.
+- O IP é o da conexão TCP (`request.client.host`), não um header que o cliente controle. Atrás de um proxy reverso, o uvicorn precisa de `--forwarded-allow-ips` só com o IP do proxy; senão todo mundo aparece com o IP do proxy e divide o mesmo limite.
+
 ## Upload e processamento de PDF (REQ-60 a 63)
 
 Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiros ficam na API e não abrem o arquivo. Os de parsing ficam no worker isolado.

@@ -48,6 +48,11 @@ TEST_ENV = {
     "CORS_ALLOWED_ORIGINS": "http://localhost:3039",
     # Fixo aqui para um .env local com outro valor não mudar o resultado dos testes.
     "CORS_MAX_AGE_SECONDS": "600",
+    # Limites altos: os testes de login fazem muitas tentativas seguidas e medem o
+    # bloqueio da conta (REQ-03). Os testes do rate limit (REQ-05) fixam os próprios.
+    "RATE_LIMIT_LOGIN_PER_IP": "1000/minute",
+    "RATE_LIMIT_LOGIN_PER_ACCOUNT": "1000/minute",
+    "RATE_LIMIT_VERIFY_PER_IP": "1000/minute",
     "WEBAUTHN_RP_ID": "localhost",
     "WEBAUTHN_ORIGIN": "http://localhost:3039",
 }
@@ -88,6 +93,16 @@ def session_token(user_id, *, user_agent: str = "testclient", ip: str = "testcli
             user_id, {"session_id": str(session.id), "ua_hash": session.ua_hmac, "ip": session.ip_hmac}
         )
     return token
+
+
+@pytest.fixture(autouse=True)
+def _zera_rate_limit():
+    """Cada teste começa com os contadores do rate limit zerados."""
+    from app.middlewares.rate_limit import reset_rate_limits
+
+    reset_rate_limits()
+    yield
+    reset_rate_limits()
 
 
 def make_pdf(pages: int = 1, size: tuple[float, float] = (595, 842)) -> bytes:
