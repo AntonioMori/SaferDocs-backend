@@ -91,6 +91,14 @@ def test_origin_repetido_e_recusado(logado):
     assert resposta.status_code == 403
 
 
+@pytest.mark.parametrize("segundo", [f"{FRONT}/b", "https://evil.example/b"], ids=["mesmo-site", "de-fora"])
+def test_referer_repetido_e_recusado(logado, segundo):
+    # Dois Referer (mesmo que o primeiro seja do front): proxies e navegadores leem um ou outro.
+    resposta = logado.post("/api/v1/auth/refresh", headers=[("Referer", f"{FRONT}/a"), ("Referer", segundo)])
+    assert resposta.status_code == 403
+    assert resposta.json()["code"] == "AUTH_009"
+
+
 def test_cliente_de_api_sem_cookie_e_sem_origin_passa(client):
     # curl ou outro serviço usando só o Bearer: não é alvo de CSRF.
     resposta = client.post("/api/v1/auth/login", json={"email": "x@teste.dev", "password": "y"})
