@@ -279,6 +279,18 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
   docker compose --profile test run --rm worker-tests
   ```
 
+## Assinatura de documentos (REQ-45 a 49 e REQ-59)
+
+**Chaves (REQ-45):** no cadastro, cada usuário ganha um par ECDSA P-256 e um certificado X.509 autoassinado com o nome dele (`app/services/user_keys.py`). A privada fica em PKCS#8, cifrada com AES-256-GCM numa chave derivada da `MASTER_KEY` só para isso, com o id do usuário como dado associado. Uma conta criada antes disso ganha o par na primeira assinatura.
+
+**Assinatura embutida (REQ-46):** `POST /api/v1/documents/sign` (autenticado; multipart com `file`, `page`, `x`, `y`) devolve o PDF assinado (`application/pdf`), com o id da assinatura no header `X-Signature-Id`. A assinatura segue o PDF Signature da ISO 32000: um campo de assinatura com aparência (o selo) e um CMS `adbe.pkcs7.detached` que cobre o arquivo inteiro pelo `/ByteRange`. O fluxo tem três etapas, e a chave privada nunca entra no worker:
+
+1. o worker (`pdf_worker/sign.py`, pyHanko) desenha o selo, reserva o `/Contents` e devolve o SHA-256 dos bytes cobertos;
+2. a API (`app/crypto/cms.py`, só asn1crypto e cryptography) monta o CMS com esse digest e assina os atributos com a chave do usuário;
+3. o worker escreve o CMS no espaço reservado.
+
+A autenticação roda antes de ler o upload. Se o leitor do pyHanko recusar o arquivo (por exemplo, xref ausente que o qpdf consegue reconstruir), o worker assina a versão regravada pelo qpdf.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash

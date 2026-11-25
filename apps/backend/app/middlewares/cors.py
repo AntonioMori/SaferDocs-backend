@@ -27,7 +27,7 @@ ALLOWED_METHODS = ("GET", "POST", "PUT", "DELETE", "OPTIONS")
 ALLOWED_HEADERS = ("Authorization", "Content-Type", "X-Request-ID")
 _ALLOWED_HEADERS_LOWER = frozenset(h.lower() for h in ALLOWED_HEADERS)
 # Headers da resposta que o JavaScript da origem permitida pode ler.
-EXPOSED_HEADERS = ("X-Request-ID", "Retry-After")
+EXPOSED_HEADERS = ("X-Request-ID", "Retry-After", "X-Signature-Id")
 _CORS_RESPONSE_HEADERS = (
     "Access-Control-Allow-Origin",
     "Access-Control-Allow-Credentials",

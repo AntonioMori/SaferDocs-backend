@@ -165,6 +165,20 @@ def test_stubs_podem_ser_chamados(usuario, fake_pdf_worker):
     rate_limit.limit_by_ip("verify", "10/minute")(request)
     # O cliente do PDF já fala com o worker de verdade (REQ-62): aqui, o worker em memória.
     pdf = make_pdf()
-    preparado = pdf_client.prepare_sign(pdf, page=1, x=10, y=10, seal_lines=["x"], signer_cert_pem=b"")
-    assert pdf_client.finish_sign(preparado.prepared_pdf, b"cms").startswith(b"%PDF")
+    # REQ-46: prepare_sign e finish_sign já são reais (fluxo completo com um certificado de teste).
+    import datetime as dt
+
+    from app.crypto.cms import build_signed_data
+    from app.services.user_keys import sign_with_user_key
+    from tests.conftest import make_signer
+
+    assinante, cert_pem = make_signer()
+    preparado = pdf_client.prepare_sign(pdf, page=1, x=10, y=10, seal_lines=["x"], signer_cert_pem=cert_pem)
+    cms = build_signed_data(
+        document_digest=preparado.digest,
+        signer_cert_der=assinante.signing_cert,
+        signing_time=dt.datetime.now(dt.UTC),
+        sign=lambda dados: sign_with_user_key(assinante, dados),
+    )
+    assert pdf_client.finish_sign(preparado.prepared_pdf, cms).startswith(b"%PDF")
     assert pdf_client.verify(pdf).has_signature is False
