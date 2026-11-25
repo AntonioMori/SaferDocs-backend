@@ -19,6 +19,8 @@ def get_engine() -> Engine:
     return create_engine(
         settings.database_url.get_secret_value(),
         pool_pre_ping=True,
+        # Erro de banco não leva os valores da consulta para o log (hash de senha, e-mail, IP).
+        hide_parameters=True,
         pool_size=5,
         max_overflow=10,
     )

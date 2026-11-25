@@ -110,7 +110,9 @@ def test_chave_privada_nunca_vai_para_o_worker(client, conta, fake_pdf_worker):
     assert privada[-32:] not in enviado  # nem o escalar da chave
     assert b"PRIVATE KEY" not in enviado
     operacoes = [p[8 : p.index(b"}") + 1] for p in fake_pdf_worker]
-    assert any(b'"prepare_sign"' in o for o in operacoes) and any(b'"finish_sign"' in o for o in operacoes)
+    assert any(b'"prepare_sign"' in o for o in operacoes)
+    # O CMS é escrito no /Contents pela própria API: o PDF assinado não volta para o worker.
+    assert not any(b'"finish_sign"' in o for o in operacoes)
 
 
 def test_sem_autenticacao_nao_le_o_upload(client):
@@ -153,6 +155,12 @@ def test_sem_autenticacao_nao_le_o_upload(client):
         ({"page": "1", "x": "nan", "y": "1"}, "x"),
         ({"page": "0", "x": "1", "y": "1"}, "page"),
         ({"page": "1", "x": "1", "y": "-5"}, "y"),
+        # QA: int()/float() aceitariam estes.
+        ({"page": "1", "x": "1_0", "y": "1"}, "x"),
+        ({"page": "1_0", "x": "1", "y": "1"}, "page"),
+        ({"page": "1", "x": "1e2", "y": "1"}, "x"),
+        ({"page": "1", "x": " 10", "y": "1"}, "x"),
+        ({"page": "١", "x": "1", "y": "1"}, "page"),  # dígito árabe-índico
     ],
 )
 def test_posicao_invalida_e_erro_de_validacao(client, conta, fake_pdf_worker, campos, campo_com_erro):

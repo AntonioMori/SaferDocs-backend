@@ -7,7 +7,7 @@ devolve o digest; a API assina o digest e manda só o CMS de volta.
     info = inspect(pdf)                       # páginas e tamanhos; recusa PDF inválido
     prepared = prepare_sign(pdf, page=1, x=400, y=50, seal_lines=[...], signer_cert_pem=cert)
     cms = <API assina prepared.digest com a chave do usuário>
-    signed_pdf = finish_sign(prepared.prepared_pdf, cms)
+    signed_pdf = finish_sign(prepared.prepared_pdf, cms)   # na API, sem o worker
     result = verify(pdf)
 
 A conversa é por socket Unix (`PDF_WORKER_SOCKET`), com o protocolo de
@@ -26,7 +26,11 @@ As funções são síncronas (socket bloqueante, até PDF_WORKER_TIMEOUT_SECONDS
 Numa rota `async def`, chame com `await run_in_threadpool(inspect, pdf)` para
 não travar o event loop; numa rota `def` o FastAPI já usa o threadpool.
 
-As quatro operações são reais: `inspect`, `prepare_sign`, `finish_sign` e `verify`.
+O worker faz `inspect`, `prepare_sign` e `verify`. O que ele devolve em
+`prepare_sign` é conferido aqui (`app/pdf/signature_bytes.py`): o original
+intacto no começo, o /ByteRange cobrindo o arquivo e o digest recalculado pela
+API. O `finish_sign` (escrever o CMS no /Contents) é só troca de bytes e roda
+na API: o arquivo assinado não passa pelo worker depois de assinado.
 """
 
 import base64
@@ -37,6 +41,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.core.errors import AppError, ErrorCode
+from app.pdf.signature_bytes import SignatureBytesError, check_prepared, embed_cms, reserved_contents
 from pdf_worker import protocol
 
 logger = logging.getLogger("saferdocs.pdf")
@@ -66,7 +71,7 @@ class PdfInfo:
 @dataclass(frozen=True)
 class PreparedSignature:
     prepared_pdf: bytes  # PDF com o selo desenhado e o espaço reservado para a assinatura
-    digest: bytes  # SHA-256 dos bytes cobertos pelo ByteRange, a ser assinado pela API
+    digest: bytes  # SHA-256 dos bytes cobertos pelo ByteRange, recalculado pela API
 
 
 @dataclass(frozen=True)
@@ -148,22 +153,26 @@ def prepare_sign(
     }
     result, prepared_pdf = _call("prepare_sign", args, pdf)
     try:
-        digest = bytes.fromhex(result["digest"])
-    except (KeyError, TypeError, ValueError):
-        digest = b""
-    if len(digest) != 32 or not prepared_pdf.startswith(b"%PDF-"):
-        logger.error("pdf-worker devolveu um prepare_sign fora do formato")
+        worker_digest = bytes.fromhex(result["digest"])
+        _, digest = check_prepared(pdf, prepared_pdf)
+    except (KeyError, TypeError, ValueError) as exc:
+        # SignatureBytesError é ValueError: preparado sem o original no começo, sem /ByteRange
+        # cobrindo o arquivo ou com /Contents já preenchido.
+        logger.error("pdf-worker devolveu um prepare_sign fora do formato (%s)", type(exc).__name__)
+        raise AppError(ErrorCode.INTERNAL) from None
+    if worker_digest != digest:
+        logger.error("pdf-worker devolveu um digest que não é o dos bytes preparados")
         raise AppError(ErrorCode.INTERNAL)
     return PreparedSignature(prepared_pdf=prepared_pdf, digest=digest)
 
 
 def finish_sign(prepared_pdf: bytes, cms: bytes) -> bytes:
-    """Worker: escreve o CMS no /Contents reservado e devolve o PDF assinado (REQ-46)."""
-    _, signed_pdf = _call("finish_sign", {"cms": base64.b64encode(cms).decode("ascii")}, prepared_pdf)
-    if len(signed_pdf) != len(prepared_pdf):
-        logger.error("pdf-worker devolveu um finish_sign fora do formato")
-        raise AppError(ErrorCode.INTERNAL)
-    return signed_pdf
+    """Escreve o CMS no /Contents reservado do PDF preparado (REQ-46). Roda na API, sem o worker."""
+    try:
+        return embed_cms(prepared_pdf, reserved_contents(prepared_pdf), cms)
+    except SignatureBytesError:
+        logger.error("PDF preparado ou CMS fora do formato ao finalizar a assinatura")
+        raise AppError(ErrorCode.INTERNAL) from None
 
 
 def verify(pdf: bytes) -> VerificationResult:
