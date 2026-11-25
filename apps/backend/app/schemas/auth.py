@@ -5,6 +5,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.core.password_policy import password_policy_violations
+from app.core.text_input import clean_text
 
 
 def check_password_policy(value: str) -> str:
@@ -18,17 +19,14 @@ def check_password_policy(value: str) -> str:
 class RegisterIn(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
 
-    name: str = Field(min_length=2, max_length=120)
+    name: str = Field(min_length=1, max_length=240)  # o limite real (120) vale depois de normalizar
     email: EmailStr = Field(max_length=254)
     password: str
 
     @field_validator("name")
     @classmethod
     def _name(cls, value: str) -> str:
-        value = " ".join(value.split())
-        if len(value) < 2:
-            raise ValueError("mínimo de 2 caracteres")
-        return value
+        return clean_text(value, min_length=2, max_length=120)  # REQ-64
 
     @field_validator("email")
     @classmethod
