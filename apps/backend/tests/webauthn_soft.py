@@ -41,6 +41,7 @@ class SoftAuthenticator:
     key: ec.EllipticCurvePrivateKey = field(default_factory=lambda: ec.generate_private_key(ec.SECP256R1()))
     credential_id: bytes = field(default_factory=lambda: os.urandom(32))
     user_handle: bytes | None = None
+    transports: list[str] = field(default_factory=lambda: ["internal", "hybrid"])
 
     def _cose_key(self) -> bytes:
         numbers = self.key.public_key().public_numbers()
@@ -49,7 +50,12 @@ class SoftAuthenticator:
         )
 
     def _client_data(
-        self, kind: str, challenge: str, origin: str | None, cross_origin: bool = False
+        self,
+        kind: str,
+        challenge: str,
+        origin: str | None,
+        cross_origin: bool = False,
+        top_origin: bool = False,
     ) -> bytes:
         data = {
             "type": kind,
@@ -57,7 +63,7 @@ class SoftAuthenticator:
             "origin": origin or self.origin,
             "crossOrigin": cross_origin,
         }
-        if cross_origin:
+        if top_origin:  # independente de crossOrigin: o servidor confere cada um
             data["topOrigin"] = "https://site-intruso.example"
         return json.dumps(data, separators=(",", ":")).encode()
 
@@ -71,10 +77,13 @@ class SoftAuthenticator:
         origin: str | None = None,
         rp_id: str | None = None,
         cross_origin: bool = False,
+        top_origin: bool = False,
     ) -> dict:
         """Resposta do navigator.credentials.create para as `options` do servidor."""
         self.user_handle = b64url_decode(options["user"]["id"])
-        client_data = self._client_data("webauthn.create", options["challenge"], origin, cross_origin)
+        client_data = self._client_data(
+            "webauthn.create", options["challenge"], origin, cross_origin, top_origin
+        )
         auth_data = (
             hashlib.sha256((rp_id or self.rp_id).encode()).digest()
             + bytes([self._flags(FLAG_AT)])
@@ -92,7 +101,7 @@ class SoftAuthenticator:
             "response": {
                 "clientDataJSON": b64url(client_data),
                 "attestationObject": b64url(attestation),
-                "transports": ["internal", "hybrid"],
+                "transports": list(self.transports),
             },
             "clientExtensionResults": {},
             "authenticatorAttachment": "platform",
@@ -106,13 +115,16 @@ class SoftAuthenticator:
         rp_id: str | None = None,
         sign_count: int | None = None,
         cross_origin: bool = False,
+        top_origin: bool = False,
     ) -> dict:
         """Resposta do navigator.credentials.get para as `options` do servidor."""
         if sign_count is not None:
             self.sign_count = sign_count
         elif self.counts_up:
             self.sign_count += 1
-        client_data = self._client_data("webauthn.get", options["challenge"], origin, cross_origin)
+        client_data = self._client_data(
+            "webauthn.get", options["challenge"], origin, cross_origin, top_origin
+        )
         auth_data = (
             hashlib.sha256((rp_id or self.rp_id).encode()).digest()
             + bytes([self._flags()])

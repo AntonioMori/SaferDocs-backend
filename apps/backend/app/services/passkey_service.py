@@ -10,6 +10,14 @@ a biblioteca (py_webauthn) confere assinatura, desafio, origem e rpId.
 A passkey dispensa senha e TOTP (já é um fator forte, com verificação do
 usuário exigida) e termina no mesmo `_complete_login` do login com senha:
 sessão, tokens, auditoria e aviso de IP novo.
+
+Bloqueio da conta (`locked_until`): o login com passkey ignora o bloqueio por
+tentativas de senha, e ao terminar zera o contador e o bloqueio, como todo
+login bem-sucedido. É uma decisão: o bloqueio existe para barrar quem adivinha
+a senha, e a passkey é um fator forte e resistente a phishing (chave privada
+no dispositivo, verificação do usuário exigida, atrelada à origem), então
+quem a usa não é quem está chutando senhas. Se a conta for desativada, o
+caminho é revogar as passkeys (REQ-10), não o bloqueio.
 """
 
 import base64
@@ -20,7 +28,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import Request, Response
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from webauthn import (
     generate_authentication_options,
@@ -50,6 +59,9 @@ CHALLENGE_TTL = timedelta(minutes=5)
 CEREMONY_TIMEOUT_MS = 120_000
 DEFAULT_PASSKEY_NAME = "Passkey"
 MAX_CREDENTIALS_PER_USER = 20
+CHALLENGE_RETENTION = timedelta(days=1)
+# Transportes que o WebAuthn define; qualquer outro valor vindo do cliente é descartado.
+KNOWN_TRANSPORTS = ("usb", "nfc", "ble", "internal", "hybrid", "smart-card", "cable")
 
 KIND_REGISTER = "register"
 KIND_LOGIN = "login"
@@ -76,6 +88,8 @@ def _fail(db: Session, request: Request, user_id: uuid.UUID | None, reason: str)
 
 def _new_challenge(db: Session, kind: str, user_id: uuid.UUID | None) -> bytes:
     challenge = secrets.token_bytes(CHALLENGE_BYTES)
+    # Limpeza oportunista, num único DELETE: desafio expirado há mais de um dia não serve a mais nada.
+    db.execute(delete(WebauthnChallenge).where(WebauthnChallenge.expires_at < _now() - CHALLENGE_RETENTION))
     db.add(
         WebauthnChallenge(user_id=user_id, challenge=challenge, kind=kind, expires_at=_now() + CHALLENGE_TTL)
     )
@@ -162,6 +176,13 @@ def registration_options(db: Session, user: User) -> dict[str, Any]:
     return json.loads(options_to_json(options))
 
 
+def _known_transports(value: Any) -> list[str] | None:
+    """Só os transportes conhecidos do WebAuthn, sem repetição. None se não vier lista."""
+    if not isinstance(value, list):
+        return None
+    return list(dict.fromkeys(t for t in value if isinstance(t, str) and t in KNOWN_TRANSPORTS))
+
+
 def register_credential(
     db: Session, user: User, credential: dict[str, Any], request: Request, name: str | None = None
 ) -> WebauthnCredential:
@@ -182,6 +203,9 @@ def register_credential(
         )
     except (InvalidRegistrationResponse, ValueError, TypeError, KeyError):
         raise _fail(db, request, user.id, "registration") from None
+    # Trava a linha do usuário: dois registros simultâneos passam um de cada vez pela conferência abaixo.
+    user_id = user.id  # lido antes de um commit que falhe: depois dele o objeto não carrega mais
+    db.execute(select(User.id).where(User.id == user_id).with_for_update())
     if db.scalar(
         select(WebauthnCredential.id).where(WebauthnCredential.credential_id == verified.credential_id)
     ):
@@ -189,7 +213,7 @@ def register_credential(
     count = len(db.scalars(select(WebauthnCredential.id).where(WebauthnCredential.user_id == user.id)).all())
     if count >= MAX_CREDENTIALS_PER_USER:
         raise _fail(db, request, user.id, "limit")
-    transports = credential.get("response", {}).get("transports")
+    transports = _known_transports(credential.get("response", {}).get("transports"))
     stored = WebauthnCredential(
         user_id=user.id,
         credential_id=verified.credential_id,
@@ -197,7 +221,7 @@ def register_credential(
         counter=verified.sign_count,
         aaguid=uuid.UUID(verified.aaguid),
         name=name or DEFAULT_PASSKEY_NAME,
-        transports=[str(t)[:20] for t in transports][:8] if isinstance(transports, list) else None,
+        transports=transports,
     )
     db.add(stored)
     audit.record(
@@ -207,7 +231,11 @@ def register_credential(
         request=request,
         user_id=user.id,
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Mesma credencial registrada por outra requisição no meio do caminho.
+        raise _fail(db, request, user_id, "duplicate") from None
     db.refresh(stored)
     return stored
 
