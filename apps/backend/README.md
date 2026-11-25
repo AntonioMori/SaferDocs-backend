@@ -323,6 +323,10 @@ A autenticação roda antes de ler o upload. PDF sem xref legível, que o leitor
 - **PDF descartado (REQ-54):** o upload é lido em memória, passa pelo worker e é descartado. Um teste faz qualquer gravação em disco falhar durante a verificação; outro põe uma marca única dentro do PDF e confere que ela não aparece em nenhuma tabela do banco nem no log.
 - **Auditoria:** toda verificação vai para ela como `DOCUMENT_VERIFIED`, sem usuário, com o resultado (e o id da assinatura, quando íntegro).
 
+## Entradas de texto (REQ-64)
+
+Textos livres (hoje o nome do usuário) passam por `app/core/text_input.py`: normalização Unicode NFKC (letras de largura cheia e variantes "disfarçadas" viram a forma comum), recusa de `<` e `>`, de caracteres de controle (inclusive quebra de linha e tab) e de caracteres invisíveis (como o que inverte a direção do texto), e espaços repetidos viram um. Erros de validação não ecoam o valor enviado. Apóstrofos e aspas, comuns em nomes, são aceitos: contra injeção de SQL a proteção é que toda consulta passa pelo ORM com parâmetros. Um teste varre o código e falha se alguma consulta for montada com f-string, concatenação, `%` ou `.format()`.
+
 ## Testes e lint
 Os testes usam um PostgreSQL descartável (em memória, porta 55433), separado do banco de desenvolvimento:
 ```bash
