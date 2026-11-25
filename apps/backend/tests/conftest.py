@@ -98,14 +98,19 @@ def session_token(user_id, *, user_agent: str = "testclient", ip: str = "testcli
 @pytest.fixture(autouse=True)
 def _zera_rate_limit():
     """Cada teste começa com os contadores do rate limit zerados."""
-    from app.middlewares.rate_limit import reset_rate_limits
+    try:
+        from app.middlewares.rate_limit import reset_rate_limits
+    except ModuleNotFoundError:
+        # worker-tests (container do pdf-worker) não tem as dependências da API.
+        yield
+        return
 
     reset_rate_limits()
     yield
     reset_rate_limits()
 
 
-def make_signer():
+def make_signer(name: str = "Teste"):
     """Usuário só em memória, com par de chaves de verdade (REQ-45), para testar a assinatura."""
     import uuid as _uuid
 
@@ -115,7 +120,7 @@ def make_signer():
     from app.db.models import User
     from app.services.user_keys import generate_user_keys
 
-    user = User(id=_uuid.uuid4(), name="Teste", email="teste@teste.dev", password_hash="!")
+    user = User(id=_uuid.uuid4(), name=name, email="teste@teste.dev", password_hash="!")
     generate_user_keys(None, user)  # type: ignore[arg-type]
     pem = x509.load_der_x509_certificate(user.signing_cert).public_bytes(serialization.Encoding.PEM)
     return user, pem

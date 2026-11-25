@@ -18,7 +18,9 @@ volta em resposta nem aparece em mensagem de erro.
 """
 
 import datetime as dt
+import unicodedata
 
+from asn1crypto import x509 as asn1_x509
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -56,6 +58,26 @@ class Redacted:
         raise TypeError("valor sensível não pode ser serializado")
 
 
+def certificate_common_name(name: str | None) -> str:
+    """Nome do usuário como commonName que qualquer leitor de certificado aceita.
+
+    O X.509 compara nomes com o stringprep (RFC 4518), que recusa caracteres sem
+    atribuição no Unicode 3.2, como emoji. Com um deles no CN, o pyHanko não
+    consegue nem comparar emissor e titular, e a verificação de um documento
+    íntegro falharia. Esses caracteres saem do CN; o nome completo continua no
+    cadastro, que é o que a verificação mostra.
+    """
+    kept = "".join(c for c in (name or "") if unicodedata.ucd_3_2_0.category(c) != "Cn")
+    common_name = " ".join(kept.split())[:MAX_CN_LENGTH].strip() or "SaferDocs"
+    try:
+        asn1_x509.Name.build({"common_name": common_name}).hashable  # noqa: B018 - o stringprep roda aqui
+    except ValueError:
+        common_name = (
+            "".join(c for c in common_name if c.isascii() and c.isprintable()).strip() or "SaferDocs"
+        )
+    return common_name
+
+
 def generate_user_keys(db: Session, user: User) -> None:
     """Gera e associa ao usuário o par de chaves de assinatura."""
     del db  # o usuário já está na sessão; quem chama faz o commit
@@ -63,7 +85,7 @@ def generate_user_keys(db: Session, user: User) -> None:
     public_key = private_key.public_key()
     subject = x509.Name(
         [
-            x509.NameAttribute(NameOID.COMMON_NAME, (user.name or "SaferDocs")[:MAX_CN_LENGTH]),
+            x509.NameAttribute(NameOID.COMMON_NAME, certificate_common_name(user.name)),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SaferDocs"),
             x509.NameAttribute(NameOID.SERIAL_NUMBER, str(user.id)),
         ]
