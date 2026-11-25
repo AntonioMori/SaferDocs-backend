@@ -53,7 +53,7 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run pytest -q -p no:warnings
+      - run: uv run pytest -q -p no:warnings --ignore=tests/test_pdf_worker_server.py
 
   worker-linux:
     name: Testes do servidor do pdf-worker (Linux)
