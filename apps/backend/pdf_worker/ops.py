@@ -118,6 +118,7 @@ def _operations() -> dict[str, Callable[[bytes, dict[str, Any]], tuple[dict[str,
         "inspect": inspect,
         "prepare_sign": sign.prepare_sign,
         "finish_sign": sign.finish_sign,
+        "verify": sign.verify,
     }
 
 
