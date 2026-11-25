@@ -193,3 +193,60 @@ def test_limite_da_verificacao_nao_divide_vaga_com_o_login(client, fake_pdf_work
     monkeypatch.setattr(get_settings(), "rate_limit_login_per_ip", "1/minute")
     client.post("/api/v1/auth/login", json={"email": "a@teste.dev", "password": "x"})
     assert verificar(client, make_pdf()).status_code == 200
+
+
+# --------------------------------------------------------------- PDF descartado (REQ-54)
+
+
+def _pdf_com_marca(marca: bytes) -> bytes:
+    from tests.test_pdf_javascript import raw_pdf, stream
+
+    return raw_pdf(
+        {
+            3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R >>",
+            4: stream(b"BT /F1 10 Tf 20 20 Td (" + marca + b") Tj ET"),
+        }
+    )
+
+
+def test_nenhum_arquivo_e_gravado_durante_a_verificacao(client, fake_pdf_worker, monkeypatch):
+    # Critério de aceite: nenhum arquivo aparece em disco durante a verificação.
+    import builtins
+    import tempfile
+
+    abrir = builtins.open
+
+    def so_leitura(arquivo, mode="r", *args, **kwargs):
+        if any(m in mode for m in "wax+"):
+            raise AssertionError(f"tentou gravar {arquivo!r} durante a verificação")
+        return abrir(arquivo, mode, *args, **kwargs)
+
+    def proibido(*args, **kwargs):
+        raise AssertionError("tentou criar arquivo temporário durante a verificação")
+
+    pdf = _pdf_com_marca(b"MARCA-DISCO")
+    monkeypatch.setattr(builtins, "open", so_leitura)
+    for nome in ("SpooledTemporaryFile", "TemporaryFile", "NamedTemporaryFile", "mkstemp"):
+        monkeypatch.setattr(tempfile, nome, proibido)
+    assert verificar(client, pdf).json()["status"] == "NAO_ENCONTRADA"
+
+
+def test_pdf_verificado_nao_fica_no_banco_nem_no_log(client, fake_pdf_worker, caplog):
+    import logging
+
+    from sqlalchemy import text
+
+    marca = f"MARCA-{uuid.uuid4().hex}".encode()
+    with caplog.at_level(logging.DEBUG):
+        assert verificar(client, _pdf_com_marca(marca)).status_code == 200
+    assert marca.decode() not in caplog.text
+    with get_sessionmaker()() as db:
+        tabelas = db.execute(
+            text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+        ).scalars()
+        for tabela in tabelas:
+            achou = db.execute(
+                text(f'SELECT count(*) FROM "{tabela}" t WHERE position(:m in t::text) > 0'),  # noqa: S608
+                {"m": marca.decode()},
+            ).scalar()
+            assert achou == 0, tabela

@@ -311,6 +311,8 @@ A autenticação roda antes de ler o upload. Se o leitor do pyHanko recusar o ar
 
 - **Verificação criptográfica (REQ-50):** o worker valida a assinatura mais recente com o pyHanko. Ele confere que o CMS bate com os bytes do `/ByteRange` e que a assinatura cobre o arquivo inteiro, e devolve a chave pública do certificado embutido. O PDF nunca é regravado na verificação.
 - **Comparação dos hashes (REQ-51):** o SHA-256 do arquivo é buscado em `signatures.signed_sha256`, e o registro só vale se a chave do certificado embutido for a do usuário que assinou.
+- **Rate limit (REQ-53):** limite por IP de `RATE_LIMIT_VERIFY_PER_IP` (10/min), com escopo próprio (não divide vaga com o login), verificado antes de ler o upload.
+- **PDF descartado (REQ-54):** o upload é lido em memória, passa pelo worker e é descartado. Um teste faz qualquer gravação em disco falhar durante a verificação; outro põe uma marca única dentro do PDF e confere que ela não aparece em nenhuma tabela do banco nem no log.
 - **Auditoria:** toda verificação vai para ela como `DOCUMENT_VERIFIED`, sem usuário, com o resultado (e o id da assinatura, quando íntegro).
 
 ## Testes e lint
