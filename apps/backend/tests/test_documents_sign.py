@@ -309,3 +309,52 @@ def test_historico_mostra_so_as_minhas_assinaturas_sem_o_pdf(client, conta, fake
     assert sorted(item["id"] for item in corpo) == sorted(ids)
     assert set(corpo[0]) == {"id", "original_sha256", "signed_sha256", "signed_at", "page", "x", "y"}
     assert client.get("/api/v1/documents/signatures").status_code == 401
+
+
+# --------------------------------------------------------------- posição (REQ-49)
+
+
+@pytest.mark.parametrize(
+    ("page", "x", "y"),
+    [
+        ("3", "50", "50"),  # página inexistente (o PDF tem 2)
+        ("1", "356", "50"),  # 356 + 240 > 595: sai pela direita
+        ("1", "50", "763"),  # 763 + 80 > 842: sai por cima
+    ],
+    ids=["pagina-inexistente", "sai-pela-direita", "sai-por-cima"],
+)
+def test_posicao_fora_da_pagina_e_doc_005(client, conta, fake_pdf_worker, page, x, y):
+    # Critério de aceite: página inexistente retorna DOC_005.
+    resposta = assinar(client, conta, make_pdf(pages=2), page=page, x=x, y=y)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "DOC_005"
+
+
+def test_selo_encostado_nos_cantos_da_pagina_passa(client, conta, fake_pdf_worker):
+    for x, y in (("0", "0"), ("355", "762")):  # 595 x 842, selo 240 x 80
+        assert assinar(client, conta, make_pdf(), x=x, y=y).status_code == 200
+
+
+def test_posicao_e_relativa_ao_tamanho_de_cada_pagina(client, conta, fake_pdf_worker):
+    import pikepdf
+
+    doc = pikepdf.new()
+    doc.add_blank_page(page_size=(842, 595))  # página 1 deitada
+    doc.add_blank_page(page_size=(300, 300))  # página 2 pequena
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    pdf = buffer.getvalue()
+    assert assinar(client, conta, pdf, page="1", x="600", y="10").status_code == 200
+    assert assinar(client, conta, pdf, page="2", x="100", y="10").json()["code"] == "DOC_005"
+
+
+def test_posicao_e_relativa_ao_canto_da_pagina_mesmo_com_mediabox_deslocado(client, conta, fake_pdf_worker):
+    import pikepdf
+
+    from tests.test_pdf_javascript import raw_pdf
+
+    pdf = raw_pdf({3: b"<< /Type /Page /Parent 2 0 R /MediaBox [100 200 695 1042] >>"})
+    assinado = assinar(client, conta, pdf, x="0", y="0").content
+    doc = pikepdf.open(io.BytesIO(assinado))
+    widget = next(f for f in doc.Root.AcroForm.Fields if f.get("/FT") == "/Sig")
+    assert [float(v) for v in widget.Rect] == [100, 200, 340, 280]
