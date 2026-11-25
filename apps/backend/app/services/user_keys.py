@@ -33,6 +33,29 @@ CERT_VALIDITY = dt.timedelta(days=3650)
 MAX_CN_LENGTH = 64  # limite do X.520 para o commonName
 
 
+class Redacted:
+    """Guarda bytes sensíveis sem mostrá-los em repr, str, f-string, log ou pickle (REQ-59)."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self, value: bytes) -> None:
+        self._value = value
+
+    def reveal(self) -> bytes:
+        return self._value
+
+    def __repr__(self) -> str:
+        return "<oculto>"
+
+    __str__ = __repr__
+
+    def __format__(self, spec: str) -> str:
+        return "<oculto>"
+
+    def __reduce__(self) -> tuple:
+        raise TypeError("valor sensível não pode ser serializado")
+
+
 def generate_user_keys(db: Session, user: User) -> None:
     """Gera e associa ao usuário o par de chaves de assinatura."""
     del db  # o usuário já está na sessão; quem chama faz o commit
@@ -92,10 +115,11 @@ def sign_with_user_key(user: User, data: bytes) -> bytes:
     if not user.signing_private_key_enc:
         raise AppError(ErrorCode.INTERNAL)
     try:
-        private_der = decrypt(
-            AeadContext.SIGNING_KEY, user.signing_private_key_enc, associated_data=user.id.bytes
+        private_der = Redacted(
+            decrypt(AeadContext.SIGNING_KEY, user.signing_private_key_enc, associated_data=user.id.bytes)
         )
-        private_key = serialization.load_der_private_key(private_der, password=None)
+        private_key = serialization.load_der_private_key(private_der.reveal(), password=None)
+        del private_der
     except (DecryptionError, ValueError):
         raise AppError(ErrorCode.INTERNAL) from None
     if not isinstance(private_key, ec.EllipticCurvePrivateKey):

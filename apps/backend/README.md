@@ -295,6 +295,8 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
 
 **Posição (REQ-49):** `page` começa em 1; `x` e `y` são o canto inferior esquerdo do selo, em pontos PDF (1/72 de polegada), contados a partir do canto inferior esquerdo da página, mesmo quando o `/MediaBox` não começa em (0, 0). O selo inteiro (240 x 80) precisa caber na página escolhida; página inexistente ou selo saindo da página dão 400 `DOC_005`. A posição fica registrada com a assinatura.
 
+**Chave privada nunca exposta (REQ-59):** a privada decifrada só existe dentro de `sign_with_user_key`, num invólucro (`Redacted`) que mostra `<oculto>` em repr, str, f-string e log e não pode ir para pickle. Ela não vai para o worker, para a resposta nem para o log. Os schemas de resposta não têm campo de chave, e falha ao decifrar vira um 500 genérico. Um teste percorre o fluxo inteiro (cadastro, login, assinatura, histórico, erros) com o log em DEBUG e procura a chave em DER, PEM, hex, base64, o escalar e o texto cifrado.
+
 A autenticação roda antes de ler o upload. Se o leitor do pyHanko recusar o arquivo (por exemplo, xref ausente que o qpdf consegue reconstruir), o worker assina a versão regravada pelo qpdf.
 
 ## Testes e lint
