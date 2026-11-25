@@ -289,6 +289,8 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
 2. a API (`app/crypto/cms.py`, só asn1crypto e cryptography) monta o CMS com esse digest e assina os atributos com a chave do usuário;
 3. o worker escreve o CMS no espaço reservado.
 
+**Selo (REQ-47):** o selo visual (240 x 80 pt) mostra o nome de quem assinou, a data e a hora em UTC, o SHA-256 completo do documento original (em duas linhas) e o id da assinatura, que é gerado antes de o selo ser desenhado. Nome longo é cortado com "..." e caracteres fora do WinAnsi (a fonte padrão do selo) viram "?".
+
 A autenticação roda antes de ler o upload. Se o leitor do pyHanko recusar o arquivo (por exemplo, xref ausente que o qpdf consegue reconstruir), o worker assina a versão regravada pelo qpdf.
 
 ## Testes e lint
