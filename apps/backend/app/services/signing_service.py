@@ -10,6 +10,7 @@ no arquivo. O PDF nunca é guardado: só os hashes e os metadados.
 
 import datetime as dt
 import hashlib
+import ipaddress
 import math
 import uuid
 from dataclasses import dataclass
@@ -17,13 +18,16 @@ from dataclasses import dataclass
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from fastapi import Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, ErrorCode, FieldError
+from app.core.request_info import client_ip, user_agent
 from app.crypto.cms import build_signed_data
-from app.db.models import User
+from app.db.models import Signature, User
 from app.pdf import client as pdf_client
 from app.pdf.upload import PdfUpload
+from app.services import audit_service as audit
 from app.services.user_keys import generate_user_keys, sign_with_user_key
 
 MAX_PAGE = 100_000
@@ -97,7 +101,33 @@ def _signer_cert_pem(db: Session, user: User) -> bytes:
 
 
 def sign_document(db: Session, user: User, upload: PdfUpload, request: Request) -> SignedDocument:
-    del request  # usado pelo registro (REQ-48)
+    """Assina, registra (REQ-48) e devolve. Falhas também vão para a auditoria."""
+    try:
+        return _sign_and_record(db, user, upload, request)
+    except AppError as error:
+        db.rollback()
+        audit.record(
+            db,
+            action=audit.AuditAction.DOCUMENT_SIGNED,
+            result=audit.AuditResult.FAILURE,
+            request=request,
+            user_id=user.id,
+            details={"error": str(error.code)},
+        )
+        db.commit()
+        raise
+
+
+def _ip_or_none(request: Request) -> str | None:
+    """IP para a coluna INET; o que não for um IP válido fica nulo em vez de quebrar a inserção."""
+    ip = client_ip(request)
+    try:
+        return str(ipaddress.ip_address(ip)) if ip else None
+    except ValueError:
+        return None
+
+
+def _sign_and_record(db: Session, user: User, upload: PdfUpload, request: Request) -> SignedDocument:
     position = parse_position(upload.fields)
     signature_id = uuid.uuid4()
     signed_at = dt.datetime.now(dt.UTC).replace(microsecond=0)
@@ -119,4 +149,41 @@ def sign_document(db: Session, user: User, upload: PdfUpload, request: Request) 
         sign=lambda data: sign_with_user_key(user, data),
     )
     signed_pdf = pdf_client.finish_sign(prepared.prepared_pdf, cms_der)
+
+    # REQ-48: só os hashes e os metadados ficam no banco; o PDF volta e é descartado.
+    db.add(
+        Signature(
+            id=signature_id,
+            user_id=user.id,
+            original_sha256=original_sha256,
+            signed_sha256=hashlib.sha256(signed_pdf).hexdigest(),
+            signed_at=signed_at,
+            ip=_ip_or_none(request),
+            user_agent=user_agent(request) or None,
+            page=position.page,
+            x=position.x,
+            y=position.y,
+        )
+    )
+    audit.record(
+        db,
+        action=audit.AuditAction.DOCUMENT_SIGNED,
+        result=audit.AuditResult.SUCCESS,
+        request=request,
+        user_id=user.id,
+        details={"signature_id": str(signature_id)},
+    )
+    db.commit()  # o PDF só volta para o usuário depois de a assinatura estar registrada
     return SignedDocument(pdf=signed_pdf, signature_id=signature_id)
+
+
+def list_signatures(db: Session, user: User) -> list[Signature]:
+    """Assinaturas do próprio usuário, da mais recente para a mais antiga."""
+    return list(
+        db.scalars(
+            select(Signature)
+            .where(Signature.user_id == user.id)
+            .order_by(Signature.signed_at.desc())
+            .limit(500)
+        )
+    )

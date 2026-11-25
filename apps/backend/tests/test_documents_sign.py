@@ -238,3 +238,74 @@ def test_nome_longo_ou_com_quebra_de_linha_nao_estoura_o_selo():
     assert all("\n" not in linha for linha in linhas)
     assert all(len(linha) <= 48 for linha in linhas)
     assert linhas[0].startswith("Assinado por: Maria da Silva") and linhas[0].endswith("...")
+
+
+# --------------------------------------------------------------- registro (REQ-48)
+
+
+def test_cada_assinatura_registra_hashes_usuario_data_ip_e_posicao(client, conta, fake_pdf_worker):
+    import hashlib
+
+    from app.db.models import AuditLog, Signature
+
+    original = make_pdf(pages=2)
+    resposta = assinar(client, conta, original, page="2", x="30.5", y="40")
+    signature_id = uuid.UUID(resposta.headers["x-signature-id"])
+    with get_sessionmaker()() as db:
+        registro = db.get(Signature, signature_id)
+        assert registro.user_id == conta["user"].id
+        assert registro.original_sha256 == hashlib.sha256(original).hexdigest()
+        assert registro.signed_sha256 == hashlib.sha256(resposta.content).hexdigest()
+        assert registro.signed_at is not None and registro.signed_at.utcoffset() is not None
+        assert registro.user_agent == "testclient"
+        assert (registro.page, float(registro.x), float(registro.y)) == (2, 30.5, 40.0)
+        auditoria = db.scalars(
+            select(AuditLog).where(AuditLog.user_id == conta["user"].id, AuditLog.action == "DOCUMENT_SIGNED")
+        ).all()
+        assert [a.result for a in auditoria] == ["SUCCESS"]
+        assert auditoria[0].details == {"signature_id": str(signature_id)}
+
+
+def test_ip_valido_e_registrado_no_formato_inet(conta, fake_pdf_worker, migrated_db):
+    from app.db.models import Signature
+
+    cliente_com_ip = TestClient(app, client=("203.0.113.7", 5000))
+    token = session_token(conta["user"].id, ip="203.0.113.7")
+    resposta = cliente_com_ip.post(
+        "/api/v1/documents/sign",
+        files={"file": ("doc.pdf", make_pdf(), "application/pdf")},
+        data={"page": "1", "x": "50", "y": "50"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resposta.status_code == 200, resposta.text
+    with get_sessionmaker()() as db:
+        assert str(db.get(Signature, uuid.UUID(resposta.headers["x-signature-id"])).ip) == "203.0.113.7"
+
+
+def test_falha_na_assinatura_nao_registra_e_vai_para_a_auditoria(client, conta, fake_pdf_worker):
+    from app.db.models import AuditLog, Signature
+
+    resposta = assinar(client, conta, b"%PDF-1.7\nquebrado")
+    assert resposta.status_code == 400
+    with get_sessionmaker()() as db:
+        assert db.scalars(select(Signature).where(Signature.user_id == conta["user"].id)).all() == []
+        falhas = db.scalars(
+            select(AuditLog).where(AuditLog.user_id == conta["user"].id, AuditLog.action == "DOCUMENT_SIGNED")
+        ).all()
+        assert [(f.result, f.details) for f in falhas] == [("FAILURE", {"error": "DOC_004"})]
+
+
+def test_historico_mostra_so_as_minhas_assinaturas_sem_o_pdf(client, conta, fake_pdf_worker):
+    outra = client.post(
+        "/api/v1/auth/register",
+        json={"name": "Bia", "email": f"bia-{uuid.uuid4().hex[:8]}@teste.dev", "password": SENHA},
+    ).json()
+    outra_conta = {"headers": {"Authorization": f"Bearer {session_token(uuid.UUID(outra['id']))}"}}
+    ids = [assinar(client, conta, make_pdf()).headers["x-signature-id"] for _ in range(2)]
+    assinar(client, outra_conta, make_pdf())
+    resposta = client.get("/api/v1/documents/signatures", headers=conta["headers"])
+    assert resposta.status_code == 200
+    corpo = resposta.json()
+    assert sorted(item["id"] for item in corpo) == sorted(ids)
+    assert set(corpo[0]) == {"id", "original_sha256", "signed_sha256", "signed_at", "page", "x", "y"}
+    assert client.get("/api/v1/documents/signatures").status_code == 401

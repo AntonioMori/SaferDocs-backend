@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.api.deps import CurrentUser, DbSession, get_auth_context
 from app.pdf.upload import PdfUpload, pdf_upload_with
+from app.schemas.documents import SignatureOut
 from app.services import signing_service
 
 router = APIRouter(prefix="/documents", tags=["documents"], dependencies=[Depends(get_auth_context)])
@@ -36,3 +37,12 @@ def sign_document(upload: SignUpload, user: CurrentUser, request: Request, db: D
             "Content-Disposition": 'attachment; filename="documento-assinado.pdf"',
         },
     )
+
+
+@router.get("/signatures", response_model=list[SignatureOut])
+def list_signatures(user: CurrentUser, db: DbSession) -> list[SignatureOut]:
+    """Histórico das minhas assinaturas: só metadados e hashes, nunca o PDF."""
+    return [
+        SignatureOut.model_validate(s, from_attributes=True)
+        for s in signing_service.list_signatures(db, user)
+    ]
