@@ -301,3 +301,88 @@ def test_rejeicao_por_contador_nao_cria_sessao(client, conta):
     resposta = entrar(client, autenticador, sign_count=2)
     assert "access_token" not in resposta.json()
     assert not any(k == "set-cookie" and "refresh" in v for k, v in resposta.headers.multi_items())
+
+
+# --------------------------------------------------------------- origin e rpId (REQ-09)
+
+ORIGENS_ERRADAS = [
+    "https://site-falso.example",  # outro domínio
+    "http://localhost:9999",  # mesmo host, outra porta
+    "https://localhost:3039",  # mesmo host, outro esquema
+    "http://sub.localhost:3039",  # subdomínio
+    "http://localhost.site-falso.example:3039",  # prefixo igual, domínio de outro
+]
+
+
+@pytest.mark.parametrize("origem", ORIGENS_ERRADAS)
+def test_registro_de_outra_origem_e_rejeitado(client, conta, origem):
+    resposta = registrar(client, conta, SoftAuthenticator(), origin=origem)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "AUTH_006"
+    assert _credencial_no_banco(conta["id"]) is None
+
+
+@pytest.mark.parametrize("origem", ORIGENS_ERRADAS)
+def test_login_de_outra_origem_e_rejeitado(client, conta, origem):
+    # Critério de aceite: asserção vinda de outra origem é rejeitada.
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    resposta = entrar(client, autenticador, origin=origem)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "AUTH_006"
+    assert "access_token" not in resposta.json()
+
+
+@pytest.mark.parametrize("rp_id", ["site-falso.example", "sub.localhost", "localhost.site-falso.example"])
+def test_registro_com_rp_id_errado_e_rejeitado(client, conta, rp_id):
+    resposta = registrar(client, conta, SoftAuthenticator(), rp_id=rp_id)
+    assert resposta.status_code == 400
+    assert _credencial_no_banco(conta["id"]) is None
+
+
+@pytest.mark.parametrize("rp_id", ["site-falso.example", "sub.localhost", "localhost.site-falso.example"])
+def test_login_com_rp_id_errado_e_rejeitado(client, conta, rp_id):
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    resposta = entrar(client, autenticador, rp_id=rp_id)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "AUTH_006"
+
+
+def test_registro_com_cross_origin_e_rejeitado(client, conta):
+    resposta = registrar(client, conta, SoftAuthenticator(), cross_origin=True)
+    assert resposta.status_code == 400
+    assert _credencial_no_banco(conta["id"]) is None
+
+
+def test_login_com_cross_origin_e_rejeitado(client, conta):
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    resposta = entrar(client, autenticador, cross_origin=True)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "AUTH_006"
+
+
+def test_falha_de_origem_nao_avanca_o_contador_nem_o_ultimo_uso(client, conta):
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    entrar(client, autenticador, origin="https://site-falso.example")
+    guardada = _credencial_no_banco(conta["id"])
+    assert guardada.counter == 0
+    assert guardada.last_used_at is None
+
+
+def test_origem_certa_continua_funcionando_depois_de_uma_recusa(client, conta):
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    assert entrar(client, autenticador, origin="https://site-falso.example").status_code == 400
+    assert entrar(client, autenticador).status_code == 200
+
+
+def test_opcoes_usam_o_rp_id_da_configuracao(client, conta):
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    registro = client.post("/api/v1/auth/passkeys/register/options", headers=conta["headers"]).json()
+    login = client.post("/api/v1/auth/passkeys/login/options").json()
+    assert registro["rp"]["id"] == login["rpId"] == settings.webauthn_rp_id
