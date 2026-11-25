@@ -48,17 +48,33 @@ class SoftAuthenticator:
             {1: 2, 3: -7, -1: 1, -2: numbers.x.to_bytes(32, "big"), -3: numbers.y.to_bytes(32, "big")}
         )
 
-    def _client_data(self, kind: str, challenge: str, origin: str | None) -> bytes:
-        data = {"type": kind, "challenge": challenge, "origin": origin or self.origin, "crossOrigin": False}
+    def _client_data(
+        self, kind: str, challenge: str, origin: str | None, cross_origin: bool = False
+    ) -> bytes:
+        data = {
+            "type": kind,
+            "challenge": challenge,
+            "origin": origin or self.origin,
+            "crossOrigin": cross_origin,
+        }
+        if cross_origin:
+            data["topOrigin"] = "https://site-intruso.example"
         return json.dumps(data, separators=(",", ":")).encode()
 
     def _flags(self, extra: int = 0) -> int:
         return FLAG_UP | (FLAG_UV if self.user_verified else 0) | extra
 
-    def create(self, options: dict, *, origin: str | None = None, rp_id: str | None = None) -> dict:
+    def create(
+        self,
+        options: dict,
+        *,
+        origin: str | None = None,
+        rp_id: str | None = None,
+        cross_origin: bool = False,
+    ) -> dict:
         """Resposta do navigator.credentials.create para as `options` do servidor."""
         self.user_handle = b64url_decode(options["user"]["id"])
-        client_data = self._client_data("webauthn.create", options["challenge"], origin)
+        client_data = self._client_data("webauthn.create", options["challenge"], origin, cross_origin)
         auth_data = (
             hashlib.sha256((rp_id or self.rp_id).encode()).digest()
             + bytes([self._flags(FLAG_AT)])
@@ -89,13 +105,14 @@ class SoftAuthenticator:
         origin: str | None = None,
         rp_id: str | None = None,
         sign_count: int | None = None,
+        cross_origin: bool = False,
     ) -> dict:
         """Resposta do navigator.credentials.get para as `options` do servidor."""
         if sign_count is not None:
             self.sign_count = sign_count
         elif self.counts_up:
             self.sign_count += 1
-        client_data = self._client_data("webauthn.get", options["challenge"], origin)
+        client_data = self._client_data("webauthn.get", options["challenge"], origin, cross_origin)
         auth_data = (
             hashlib.sha256((rp_id or self.rp_id).encode()).digest()
             + bytes([self._flags()])

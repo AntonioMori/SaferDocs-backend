@@ -82,15 +82,32 @@ def _new_challenge(db: Session, kind: str, user_id: uuid.UUID | None) -> bytes:
     return challenge
 
 
-def _challenge_from_client_data(credential: dict[str, Any]) -> bytes | None:
-    """Desafio que o navegador assinou, lido do clientDataJSON (base64url)."""
+def _client_data(credential: dict[str, Any]) -> dict[str, Any]:
+    """clientDataJSON decodificado (base64url). Vazio se não for um JSON de objeto."""
     try:
         raw = credential["response"]["clientDataJSON"]
-        client_data = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
-        value = client_data["challenge"]
-        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+        data = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
     except (KeyError, TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _challenge_from_client_data(credential: dict[str, Any]) -> bytes | None:
+    """Desafio que o navegador assinou, lido do clientDataJSON (base64url)."""
+    value = _client_data(credential).get("challenge")
+    if not isinstance(value, str):
         return None
+    try:
+        return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    except ValueError:
+        return None
+
+
+def _is_cross_origin(credential: dict[str, Any]) -> bool:
+    """REQ-09: a biblioteca só confere a origin; a cerimônia feita dentro de um iframe de outro site
+    (`crossOrigin` verdadeiro, ou `topOrigin` presente) também é recusada."""
+    data = _client_data(credential)
+    return bool(data.get("crossOrigin")) or "topOrigin" in data
 
 
 def _consume_challenge(
@@ -153,6 +170,8 @@ def register_credential(
     challenge = _consume_challenge(db, _challenge_from_client_data(credential), KIND_REGISTER, user.id)
     if challenge is None:
         raise _fail(db, request, user.id, "challenge")
+    if _is_cross_origin(credential):
+        raise _fail(db, request, user.id, "cross_origin")
     try:
         verified = verify_registration_response(
             credential=credential,
@@ -260,6 +279,8 @@ def authenticate(db: Session, credential: dict[str, Any], request: Request, resp
     challenge = _consume_challenge(db, _challenge_from_client_data(credential), KIND_LOGIN, None)
     if challenge is None:
         raise _fail(db, request, None, "challenge")
+    if _is_cross_origin(credential):
+        raise _fail(db, request, None, "cross_origin")
     raw_id = _credential_raw_id(credential)
     stored = (
         db.scalar(
