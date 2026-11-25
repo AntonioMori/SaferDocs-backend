@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
 from app.crypto.jwt import decode_access_token
-from app.db.models import WebauthnChallenge, WebauthnCredential
+from app.db.models import AuditLog, SecurityEvent, WebauthnChallenge, WebauthnCredential
 from app.db.session import get_sessionmaker
 from app.main import app
 from tests.conftest import session_token
@@ -220,3 +220,84 @@ def test_ultimo_uso_e_atualizado_no_login(client, conta):
     assert _credencial_no_banco(conta["id"]).last_used_at is None
     assert entrar(client, autenticador).status_code == 200
     assert _credencial_no_banco(conta["id"]).last_used_at is not None
+
+
+# --------------------------------------------------------------- contador de uso (REQ-08)
+
+
+def _registrar_com_contador(client, conta, guardado):
+    """Registra um autenticador e deixa o contador guardado no valor pedido."""
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    if guardado:
+        assert entrar(client, autenticador, sign_count=guardado).status_code == 200
+    assert _credencial_no_banco(conta["id"]).counter == guardado
+    return autenticador
+
+
+def _eventos(user_id):
+    with get_sessionmaker()() as db:
+        audit_rows = db.scalars(
+            select(AuditLog.action).where(
+                AuditLog.user_id == user_id, AuditLog.action == "PASSKEY_COUNTER_MISMATCH"
+            )
+        ).all()
+        eventos = db.scalars(
+            select(SecurityEvent.type).where(
+                SecurityEvent.user_id == user_id, SecurityEvent.type == "PASSKEY_COUNTER_MISMATCH"
+            )
+        ).all()
+    return len(audit_rows), len(eventos)
+
+
+def test_contador_zero_e_zero_e_aceito(client, conta):
+    # Passkey sincronizada manda sempre 0: não há o que comparar.
+    autenticador = SoftAuthenticator(counts_up=False)
+    registrar(client, conta, autenticador)
+    assert entrar(client, autenticador).status_code == 200
+    assert entrar(client, autenticador).status_code == 200
+    assert _credencial_no_banco(conta["id"]).counter == 0
+
+
+def test_contador_de_5_para_6_e_aceito_e_guardado(client, conta):
+    autenticador = _registrar_com_contador(client, conta, 5)
+    assert entrar(client, autenticador, sign_count=6).status_code == 200
+    assert _credencial_no_banco(conta["id"]).counter == 6
+
+
+def test_contador_igual_e_rejeitado(client, conta):
+    autenticador = _registrar_com_contador(client, conta, 6)
+    resposta = entrar(client, autenticador, sign_count=6)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "AUTH_006"
+    assert _credencial_no_banco(conta["id"]).counter == 6
+
+
+def test_contador_menor_e_rejeitado(client, conta):
+    autenticador = _registrar_com_contador(client, conta, 6)
+    assert entrar(client, autenticador, sign_count=3).status_code == 400
+    assert _credencial_no_banco(conta["id"]).counter == 6
+
+
+def test_contador_que_volta_para_zero_e_rejeitado(client, conta):
+    autenticador = _registrar_com_contador(client, conta, 6)
+    assert entrar(client, autenticador, sign_count=0).status_code == 400
+
+
+def test_contador_que_sai_de_zero_e_aceito(client, conta):
+    autenticador = _registrar_com_contador(client, conta, 0)
+    assert entrar(client, autenticador, sign_count=1).status_code == 200
+
+
+def test_rejeicao_por_contador_vai_para_auditoria_e_alerta_o_dono(client, conta):
+    autenticador = _registrar_com_contador(client, conta, 6)
+    assert _eventos(conta["id"]) == (0, 0)
+    assert entrar(client, autenticador, sign_count=6).status_code == 400
+    assert _eventos(conta["id"]) == (1, 1)
+
+
+def test_rejeicao_por_contador_nao_cria_sessao(client, conta):
+    autenticador = _registrar_com_contador(client, conta, 6)
+    resposta = entrar(client, autenticador, sign_count=2)
+    assert "access_token" not in resposta.json()
+    assert not any(k == "set-cookie" and "refresh" in v for k, v in resposta.headers.multi_items())

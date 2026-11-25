@@ -42,6 +42,7 @@ from app.core.errors import AppError, ErrorCode
 from app.db.models import User, WebauthnChallenge, WebauthnCredential
 from app.schemas.auth import TokenOut
 from app.services import audit_service as audit
+from app.services import security_events
 from app.services.auth_service import _complete_login
 
 CHALLENGE_BYTES = 32
@@ -217,6 +218,42 @@ def _credential_raw_id(credential: dict[str, Any]) -> bytes | None:
         return None
 
 
+def _counter_is_valid(stored: int, received: int) -> bool:
+    """REQ-08: 0 e 0 passa (passkey sincronizada sempre manda 0); senão o recebido tem de ser maior."""
+    if stored == 0 and received == 0:
+        return True
+    return received > stored
+
+
+def _counter_mismatch(db: Session, request: Request, stored: WebauthnCredential, received: int) -> AppError:
+    """Contador que não subiu: possível clonagem. Audita, avisa o dono e recusa o login."""
+    user_id = stored.user_id
+    credential_id = stored.id
+    stored_counter = stored.counter
+    db.rollback()
+    audit.record(
+        db,
+        action=audit.AuditAction.PASSKEY_COUNTER_MISMATCH,
+        result=audit.AuditResult.FAILURE,
+        request=request,
+        user_id=user_id,
+        details={
+            "credential": str(credential_id),
+            "stored_counter": stored_counter,
+            "received_counter": received,
+        },
+    )
+    security_events.emit(
+        db,
+        user_id=user_id,
+        type=security_events.SecurityEventType.PASSKEY_COUNTER_MISMATCH,
+        request=request,
+        details={"credential": str(credential_id)},
+    )
+    db.commit()
+    return _fail(db, request, user_id, "counter")
+
+
 def authenticate(db: Session, credential: dict[str, Any], request: Request, response: Response) -> TokenOut:
     """Confere a resposta do navigator.credentials.get e faz o login (mesmo fim do login com senha)."""
     settings = get_settings()
@@ -240,11 +277,14 @@ def authenticate(db: Session, credential: dict[str, Any], request: Request, resp
             expected_rp_id=settings.webauthn_rp_id,
             expected_origin=settings.webauthn_origin,
             credential_public_key=stored.public_key,
-            credential_current_sign_count=stored.counter,
+            # A regra do contador é nossa (`_counter_is_valid`), então a biblioteca não compara nada.
+            credential_current_sign_count=0,
             require_user_verification=True,
         )
     except (InvalidAuthenticationResponse, ValueError, TypeError, KeyError):
         raise _fail(db, request, stored.user_id, "assertion") from None
+    if not _counter_is_valid(stored.counter, verified.new_sign_count):
+        raise _counter_mismatch(db, request, stored, verified.new_sign_count)
     stored.counter = verified.new_sign_count
     stored.last_used_at = _now()
     user = db.get(User, stored.user_id)
