@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from app.api.deps import DbSession
 from app.core.config import get_settings
 from app.core.request_info import client_ip
-from app.middlewares.rate_limit import check_rate_limit
+from app.middlewares.rate_limit import check_rate_limit, ip_bucket
 from app.pdf.upload import PdfUpload, pdf_upload_with
 from app.schemas.documents import VerificationOut
 from app.services import verify_service
@@ -19,7 +19,7 @@ VerifyUpload = Annotated[PdfUpload, Depends(pdf_upload_with())]
 
 def limit_verify_by_ip(request: Request) -> None:
     """REQ-53: limite por IP da rota pública, lido do .env a cada pedido."""
-    check_rate_limit("verify", client_ip(request) or "desconhecido", get_settings().rate_limit_verify_per_ip)
+    check_rate_limit("verify", ip_bucket(client_ip(request)), get_settings().rate_limit_verify_per_ip)
 
 
 # O rate limit é dependência do decorador: roda antes de o upload ser lido.

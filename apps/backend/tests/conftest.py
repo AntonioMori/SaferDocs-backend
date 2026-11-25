@@ -53,6 +53,7 @@ TEST_ENV = {
     "RATE_LIMIT_LOGIN_PER_IP": "1000/minute",
     "RATE_LIMIT_LOGIN_PER_ACCOUNT": "1000/minute",
     "RATE_LIMIT_VERIFY_PER_IP": "1000/minute",
+    "RATE_LIMIT_PASSKEY_REGISTER_PER_USER": "1000/minute",
     "WEBAUTHN_RP_ID": "localhost",
     "WEBAUTHN_ORIGIN": "http://localhost:3039",
 }

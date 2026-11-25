@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     rate_limit_login_per_ip: str = "10/minute"
     rate_limit_login_per_account: str = "5/minute"
     rate_limit_verify_per_ip: str = "10/minute"
+    rate_limit_passkey_register_per_user: str = "10/minute"
 
     # --- PDF (REQ-61/62)
     max_upload_mb: int = Field(default=20, gt=0, le=100)
@@ -179,7 +180,12 @@ class Settings(BaseSettings):
             raise ValueError("precisa ser base64 de exatamente 32 bytes")
         return value
 
-    @field_validator("rate_limit_login_per_ip", "rate_limit_login_per_account", "rate_limit_verify_per_ip")
+    @field_validator(
+        "rate_limit_login_per_ip",
+        "rate_limit_login_per_account",
+        "rate_limit_verify_per_ip",
+        "rate_limit_passkey_register_per_user",
+    )
     @classmethod
     def _validate_rate_limit(cls, value: str) -> str:
         if not RATE_LIMIT_PATTERN.match(value):

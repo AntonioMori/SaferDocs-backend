@@ -14,7 +14,7 @@ from app.core.request_info import client_ip
 from app.crypto import totp
 from app.crypto.passwords import dummy_hash, hash_password, needs_rehash, verify_password
 from app.db.models import MfaChallenge, User
-from app.middlewares.rate_limit import check_rate_limit
+from app.middlewares.rate_limit import check_rate_limit, ip_bucket
 from app.schemas.auth import LoginIn, LoginTotpIn, MfaRequiredOut, RegisterIn, TokenOut, UserOut
 from app.services import audit_service as audit
 from app.services import security_events, totp_service
@@ -88,7 +88,7 @@ def login(db: Session, data: LoginIn, request: Request, response: Response) -> T
     email = data.email.strip().lower()
 
     # REQ-05: limites por IP e por conta (implementação no lado B).
-    check_rate_limit("login-ip", client_ip(request) or "desconhecido", settings.rate_limit_login_per_ip)
+    check_rate_limit("login-ip", ip_bucket(client_ip(request)), settings.rate_limit_login_per_ip)
     check_rate_limit("login-account", email, settings.rate_limit_login_per_account)
 
     # FOR UPDATE: tentativas simultâneas não perdem incrementos do contador de falhas.
@@ -151,7 +151,7 @@ def _invalid_mfa(db: Session, request: Request, user_id, reason: str, action=Non
 def login_totp(db: Session, data: LoginTotpIn, request: Request, response: Response) -> TokenOut:
     """Segundo passo do login (REQ-15): só aqui os tokens são emitidos."""
     settings = get_settings()
-    check_rate_limit("login-totp-ip", client_ip(request) or "desconhecido", settings.rate_limit_login_per_ip)
+    check_rate_limit("login-totp-ip", ip_bucket(client_ip(request)), settings.rate_limit_login_per_ip)
 
     now = datetime.now(UTC)
     challenge = db.scalar(
