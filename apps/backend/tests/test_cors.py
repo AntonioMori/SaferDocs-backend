@@ -148,7 +148,7 @@ def test_lista_de_headers_vazia_ou_com_virgulas_sobrando_passa():
 def test_origem_confiavel_recebe_credenciais():
     response = client.get("/api/v1/health", headers={"Origin": ALLOWED})
     assert response.headers["access-control-allow-credentials"] == "true"
-    assert response.headers["access-control-expose-headers"] == "X-Request-ID, Retry-After"
+    assert response.headers["access-control-expose-headers"] == "X-Request-ID, Retry-After, X-Signature-Id"
     assert preflight().headers["access-control-allow-credentials"] == "true"
 
 
