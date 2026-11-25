@@ -19,7 +19,9 @@ tempo até a mais antiga sair da janela.
 A API roda num processo só (um worker do uvicorn), então a memória basta. Com
 vários processos, cada um teria o próprio contador: aí o estado precisaria ir
 para o PostgreSQL ou um Redis. O total de chaves é limitado (MAX_KEYS), para um
-atacante que troca de IP ou de e-mail a cada pedido não esgotar a memória.
+atacante que troca de IP ou de e-mail a cada pedido não esgotar a memória; com
+a tabela cheia só saem chaves expiradas, e uma chave nova espera em vez de
+apagar o contador de outra.
 """
 
 import math
@@ -47,36 +49,53 @@ def parse_limit(limit: str) -> tuple[int, int]:
 
 class SlidingWindowLimiter:
     def __init__(self, max_keys: int = MAX_KEYS) -> None:
-        self._hits: OrderedDict[tuple[str, str], deque[float]] = OrderedDict()
+        # (escopo, chave) -> (janela em segundos, instantes das requisições aceitas).
+        # Em ordem de uso: a primeira é a que está há mais tempo sem requisição.
+        self._hits: OrderedDict[tuple[str, str], tuple[int, deque[float]]] = OrderedDict()
         self._lock = threading.Lock()
         self._max_keys = max_keys
 
     def hit(self, scope: str, key: str, count: int, window: int) -> float | None:
         """Registra uma requisição. Devolve None se passou, ou os segundos até poder tentar de novo."""
-        now = _clock()
         with self._lock:
+            now = _clock()  # dentro do lock: a ordem dos instantes é a ordem de chegada
             entry = (scope, key)
-            hits = self._hits.get(entry)
-            if hits is None:
+            current = self._hits.get(entry)
+            if current is None:
                 if len(self._hits) >= self._max_keys:
-                    self._evict(now, window)
-                hits = self._hits[entry] = deque()
+                    wait = self._evict(now)
+                    if wait is not None:
+                        return wait
+                hits: deque[float] = deque()
             else:
+                hits = current[1]
                 self._hits.move_to_end(entry)
+            self._hits[entry] = (window, hits)
             while hits and hits[0] <= now - window:
                 hits.popleft()
             if len(hits) >= count:
-                return hits[0] + window - now
+                # Só sai do bloqueio quando sobrarem count-1 na janela.
+                return hits[len(hits) - count] + window - now
             hits.append(now)
             return None
 
-    def _evict(self, now: float, window: int) -> None:
-        """Abre espaço: primeiro as chaves sem requisição recente, senão as menos usadas."""
-        expired = [k for k, v in self._hits.items() if not v or v[-1] <= now - window]
-        for key in expired:
-            del self._hits[key]
-        while len(self._hits) >= self._max_keys:
-            self._hits.popitem(last=False)
+    def _evict(self, now: float) -> float | None:
+        """Abre espaço tirando chaves cuja janela já passou, das mais antigas para as novas.
+
+        Só sai chave expirada: tirar uma ativa zeraria o contador de alguém (um
+        atacante encheria a tabela para apagar o bloqueio de uma conta). Se todas
+        estão ativas, a chave nova espera (fail closed) e o retorno é quanto.
+        Custo amortizado O(1): cada chave sai uma vez só.
+        """
+        while self._hits:
+            entry, (window, hits) = next(iter(self._hits.items()))
+            expires = (hits[-1] + window) if hits else now
+            if expires > now:
+                return expires - now
+            del self._hits[entry]
+            if len(self._hits) < self._max_keys:
+                return None
+        return None
 
     def reset(self) -> None:
         with self._lock:
