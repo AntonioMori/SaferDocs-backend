@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.crypto.jwt import decode_access_token
-from app.db.models import WebauthnChallenge
+from app.db.models import WebauthnChallenge, WebauthnCredential
 from app.db.session import get_sessionmaker
 from app.main import app
 from tests.conftest import session_token
@@ -167,3 +167,56 @@ def test_login_com_passkey_tem_rate_limit_por_ip(client, monkeypatch):
 def test_corpo_fora_do_formato_e_erro_de_validacao(client):
     for corpo in ({"credential": {"id": "x"}}, {"credential": "texto"}, {}):
         assert client.post("/api/v1/auth/passkeys/login/verify", json=corpo).status_code == 400
+
+
+# --------------------------------------------------------------- dados do dispositivo (REQ-07)
+
+
+def _credencial_no_banco(user_id):
+    with get_sessionmaker()() as db:
+        return db.scalar(select(WebauthnCredential).where(WebauthnCredential.user_id == user_id))
+
+
+def test_registro_persiste_os_quatro_campos_do_dispositivo(client, conta):
+    # Critério de aceite: credentialId, publicKey, counter e aaguid são persistidos no registro.
+    autenticador = SoftAuthenticator(sign_count=0)
+    assert registrar(client, conta, autenticador).status_code == 201
+    guardada = _credencial_no_banco(conta["id"])
+    assert guardada.credential_id == autenticador.credential_id
+    assert guardada.public_key
+    assert guardada.counter == 0
+    assert guardada.aaguid == autenticador.aaguid
+
+
+def test_registro_guarda_nome_transportes_e_datas(client, conta):
+    resposta = registrar(client, conta, SoftAuthenticator(), nome="  Meu   notebook ")
+    assert resposta.status_code == 201
+    corpo = resposta.json()
+    assert corpo["name"] == "Meu notebook"
+    assert corpo["transports"] == ["internal", "hybrid"]
+    assert corpo["created_at"]
+    assert corpo["last_used_at"] is None
+
+
+def test_nome_padrao_quando_nao_informado(client, conta):
+    assert registrar(client, conta, SoftAuthenticator()).json()["name"] == "Passkey"
+
+
+@pytest.mark.parametrize("nome", ["<script>", "", "   ", "a" * 61, "nome‮oculto"])
+def test_nome_invalido_e_recusado(client, conta, nome):
+    assert registrar(client, conta, SoftAuthenticator(), nome=nome).status_code == 400
+
+
+def test_resposta_do_registro_nao_expoe_chave_publica_nem_contador(client, conta):
+    corpo = registrar(client, conta, SoftAuthenticator()).json()
+    assert "public_key" not in corpo
+    assert "counter" not in corpo
+    assert "credential_id" not in corpo
+
+
+def test_ultimo_uso_e_atualizado_no_login(client, conta):
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    assert _credencial_no_banco(conta["id"]).last_used_at is None
+    assert entrar(client, autenticador).status_code == 200
+    assert _credencial_no_banco(conta["id"]).last_used_at is not None

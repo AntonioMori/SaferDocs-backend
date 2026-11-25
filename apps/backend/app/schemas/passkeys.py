@@ -8,9 +8,12 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.text_input import clean_text
 
 B64 = r"^[A-Za-z0-9_-]*={0,2}$"
+MAX_NAME_LENGTH = 60  # tamanho da coluna webauthn_credentials.name
 
 
 class _Credential(BaseModel):
@@ -52,7 +55,14 @@ class PasskeyRegisterIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     credential: RegistrationCredential
-    name: str | None = Field(default=None, max_length=120)
+    name: str | None = Field(default=None, max_length=240)  # o limite real vale depois de normalizar
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return clean_text(value, min_length=1, max_length=MAX_NAME_LENGTH)  # REQ-64
 
 
 class PasskeyLoginIn(BaseModel):
@@ -66,4 +76,7 @@ class PasskeyOut(BaseModel):
 
     id: uuid.UUID
     name: str
+    aaguid: uuid.UUID
+    transports: list[str] | None
     created_at: datetime
+    last_used_at: datetime | None

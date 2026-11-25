@@ -364,6 +364,7 @@ Implementadas com a biblioteca `webauthn` (py_webauthn), em `app/services/passke
 - **Desafio:** 32 bytes aleatórios, guardado no banco, de uso único (queimado antes de conferir a resposta) e válido por 5 minutos. Desafio de registro não serve para login e vice-versa.
 - **Passkey de verdade:** credencial descobrível (o login não pede e-mail) e verificação do usuário (biometria ou PIN) exigida. Por isso a passkey dispensa senha e TOTP e termina no mesmo fluxo do login com senha: sessão, access token, cookie de refresh, auditoria e aviso de IP novo.
 - **Falhas:** toda falha de cerimônia vira 400 `AUTH_006`, sem dizer o motivo, e o motivo vai para a auditoria.
+- **Dados do dispositivo (REQ-07):** cada passkey guarda `credential_id`, `public_key`, `counter` e `aaguid` (os quatro campos do requisito), mais nome amigável (padrão "Passkey", normalizado por `clean_text`, até 60 caracteres), `transports`, `created_at` e `last_used_at` (atualizado a cada login). A resposta da API traz só os campos públicos: nunca `public_key`, `counter` nem `credential_id`.
 - **Corpo das rotas:** schemas tipados e com limites de tamanho, em vez de JSON livre.
 - **Testes:** usam um autenticador WebAuthn de software (`tests/webauthn_soft.py`) que gera atestados e asserções reais.
 
