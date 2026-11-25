@@ -246,6 +246,7 @@ def authenticate(db: Session, credential: dict[str, Any], request: Request, resp
     except (InvalidAuthenticationResponse, ValueError, TypeError, KeyError):
         raise _fail(db, request, stored.user_id, "assertion") from None
     stored.counter = verified.new_sign_count
+    stored.last_used_at = _now()
     user = db.get(User, stored.user_id)
     if user is None:
         raise _fail(db, request, None, "unknown_user")
