@@ -179,3 +179,62 @@ def test_conta_antiga_sem_chaves_ganha_o_par_na_primeira_assinatura(client, cont
     assert resposta.status_code == 200
     with get_sessionmaker()() as db:
         assert db.get(User, conta["user"].id).signing_cert is not None
+
+
+# --------------------------------------------------------------- selo (REQ-47)
+
+
+def _texto_do_selo(pdf: bytes) -> str:
+    import pikepdf
+
+    doc = pikepdf.open(io.BytesIO(pdf))
+    campo = next(f for f in doc.Root.AcroForm.Fields if f.get("/FT") == "/Sig")
+    stream = campo.AP.N
+    pedacos = [stream.read_bytes()]
+    for xobj in (stream.get("/Resources", {}).get("/XObject", {}) or {}).values():
+        pedacos.append(xobj.read_bytes())
+    import re
+
+    texto = b"".join(pedacos).decode("latin-1")
+    # Strings do PDF: o pyHanko escreve pontuação como escape octal ("\\072" é ":").
+    return re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1), 8)), texto)
+
+
+def test_selo_mostra_nome_data_utc_hash_e_id(client, conta, fake_pdf_worker):
+    import hashlib
+
+    original = make_pdf()
+    resposta = assinar(client, conta, original)
+    texto = _texto_do_selo(resposta.content)
+    sha = hashlib.sha256(original).hexdigest()
+    assert "Assinado por: Ana Souza" in texto
+    assert " UTC" in texto and "Em: 20" in texto
+    assert sha[:32] in texto and sha[32:] in texto  # hash completo, em duas linhas
+    assert f"ID: {resposta.headers['x-signature-id']}" in texto
+
+
+def test_data_do_selo_esta_em_utc(client, conta, fake_pdf_worker):
+    import datetime as dt
+    import re
+
+    antes = dt.datetime.now(dt.UTC).replace(microsecond=0)
+    texto = _texto_do_selo(assinar(client, conta, make_pdf()).content)
+    depois = dt.datetime.now(dt.UTC)
+    carimbo = re.search(r"Em: (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) UTC", texto)
+    assert carimbo
+    valor = carimbo.group(1)
+    momento = dt.datetime.strptime(valor, "%Y-%m-%d %H:%M:%S").replace(tzinfo=dt.UTC)
+    assert antes <= momento <= depois
+
+
+def test_nome_longo_ou_com_quebra_de_linha_nao_estoura_o_selo():
+    import datetime as dt
+
+    from app.db.models import User
+    from app.services.signing_service import seal_lines
+
+    user = User(name="Maria\nda Silva " + "Sobrenome " * 10)
+    linhas = seal_lines(user, uuid.uuid4(), dt.datetime.now(dt.UTC), "a" * 64)
+    assert all("\n" not in linha for linha in linhas)
+    assert all(len(linha) <= 48 for linha in linhas)
+    assert linhas[0].startswith("Assinado por: Maria da Silva") and linhas[0].endswith("...")
