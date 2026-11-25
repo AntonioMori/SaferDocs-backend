@@ -11,10 +11,15 @@ para a auditoria (REQ-54).
 
 import hashlib
 
+from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.errors import AppError
 from app.db.models import Signature, User
+from app.pdf import client as pdf_client
+from app.schemas.documents import VerificationOut, VerificationStatus
+from app.services import audit_service as audit
 
 
 def find_registered_signature(
@@ -41,3 +46,42 @@ def find_registered_signature(
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def verify_document(db: Session, pdf: bytes, request: Request) -> VerificationOut:
+    """Os três resultados da Figura 8 (REQ-52). Toda verificação vai para a auditoria."""
+    try:
+        result = _verify(db, pdf)
+    except AppError as error:
+        _audit(db, request, audit.AuditResult.FAILURE, {"error": str(error.code)})
+        raise
+    details: dict[str, str] = {"status": result.status.value}
+    if result.signature_id:
+        details["signature_id"] = str(result.signature_id)
+    _audit(db, request, audit.AuditResult.SUCCESS, details)
+    return result
+
+
+def _verify(db: Session, pdf: bytes) -> VerificationOut:
+    embedded = pdf_client.verify(pdf)
+    if not embedded.has_signature:
+        return VerificationOut(status=VerificationStatus.NAO_ENCONTRADA)
+    if not (embedded.cms_valid and embedded.covers_whole_file):
+        return VerificationOut(status=VerificationStatus.ADULTERADO)
+    registered = find_registered_signature(db, sha256_hex(pdf), embedded.signer_public_key_der)
+    if registered is None:
+        return VerificationOut(status=VerificationStatus.ADULTERADO)
+    signer = db.get(User, registered.user_id)
+    return VerificationOut(
+        status=VerificationStatus.INTEGRO,
+        signer_name=signer.name if signer else None,
+        signed_at=registered.signed_at,
+        signature_id=registered.id,
+    )
+
+
+def _audit(db: Session, request: Request, result: audit.AuditResult, details: dict[str, str]) -> None:
+    audit.record(
+        db, action=audit.AuditAction.DOCUMENT_VERIFIED, result=result, request=request, details=details
+    )
+    db.commit()
