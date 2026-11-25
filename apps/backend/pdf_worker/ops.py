@@ -56,8 +56,8 @@ def open_pdf(pdf: bytes) -> tuple[pikepdf.Pdf, list[str]]:
     return document, warnings
 
 
-def _page_size(page: pikepdf.Dictionary) -> tuple[float, float]:
-    """Largura e altura do /MediaBox da página, herdado dos ancestrais se preciso.
+def _page_box(page: pikepdf.Dictionary) -> tuple[float, float, float, float]:
+    """Canto inferior esquerdo, largura e altura do /MediaBox, herdado dos ancestrais se preciso.
 
     O `page.mediabox` do pikepdf devolve 612x792 quando a caixa falta ou é
     inválida; um tamanho inventado poria o selo no lugar errado (REQ-49).
@@ -78,7 +78,7 @@ def _page_size(page: pikepdf.Dictionary) -> tuple[float, float]:
             width, height = abs(x1 - x0), abs(y1 - y0)
             if not (0 < width <= MAX_PAGE_POINTS and 0 < height <= MAX_PAGE_POINTS):
                 raise OpError(ERR_UNPROCESSABLE)
-            return width, height
+            return min(x0, x1), min(y0, y1), width, height
         node = node.get("/Parent")
     raise OpError(ERR_UNPROCESSABLE)
 
@@ -92,8 +92,8 @@ def page_sizes(pdf: bytes) -> list[dict[str, float]]:
                 raise OpError(ERR_UNPROCESSABLE)
             pages = []
             for page in document.pages:
-                width, height = _page_size(page.obj)
-                pages.append({"width": width, "height": height})
+                left, bottom, width, height = _page_box(page.obj)
+                pages.append({"width": width, "height": height, "left": left, "bottom": bottom})
             # Ao ler a árvore de páginas, o qpdf troca um MediaBox ausente ou inválido por
             # 612x792 no próprio objeto e só avisa. Um tamanho inventado não serve (REQ-49).
             warnings += document.get_warnings()
@@ -107,7 +107,7 @@ def page_sizes(pdf: bytes) -> list[dict[str, float]]:
 def inspect(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
     """Abre o PDF e devolve o tamanho de cada página (usado para validar a posição do selo)."""
     del args
-    pages = page_sizes(pdf)
+    pages = [{"width": p["width"], "height": p["height"]} for p in page_sizes(pdf)]
     return {"page_count": len(pages), "pages": pages}, b""
 
 
