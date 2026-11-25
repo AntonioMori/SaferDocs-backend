@@ -312,3 +312,60 @@ def authenticate(db: Session, credential: dict[str, Any], request: Request, resp
     if user is None:
         raise _fail(db, request, None, "unknown_user")
     return _complete_login(db, user, request, response)
+
+
+# --------------------------------------------------------------- gerenciamento (REQ-10)
+
+
+def _own_credential(db: Session, user: User, passkey_id: uuid.UUID) -> WebauthnCredential:
+    """Passkey do próprio usuário. De outro usuário ou inexistente dá o mesmo 404, sem vazar que existe."""
+    stored = db.scalar(
+        select(WebauthnCredential).where(WebauthnCredential.id == passkey_id).with_for_update()
+    )
+    if stored is None or stored.user_id != user.id:
+        raise AppError(ErrorCode.NOT_FOUND)
+    return stored
+
+
+def list_credentials(db: Session, user: User) -> list[WebauthnCredential]:
+    """Passkeys do usuário, da mais recente para a mais antiga."""
+    return list(
+        db.scalars(
+            select(WebauthnCredential)
+            .where(WebauthnCredential.user_id == user.id)
+            .order_by(WebauthnCredential.created_at.desc(), WebauthnCredential.id)
+        )
+    )
+
+
+def rename_credential(
+    db: Session, user: User, passkey_id: uuid.UUID, name: str, request: Request
+) -> WebauthnCredential:
+    stored = _own_credential(db, user, passkey_id)
+    stored.name = name
+    audit.record(
+        db,
+        action=audit.AuditAction.PASSKEY_RENAMED,
+        result=audit.AuditResult.SUCCESS,
+        request=request,
+        user_id=user.id,
+        details={"credential": str(stored.id)},
+    )
+    db.commit()
+    db.refresh(stored)
+    return stored
+
+
+def revoke_credential(db: Session, user: User, passkey_id: uuid.UUID, request: Request) -> None:
+    """Apaga a passkey: sem a chave pública guardada, ela não autentica mais."""
+    stored = _own_credential(db, user, passkey_id)
+    db.delete(stored)
+    audit.record(
+        db,
+        action=audit.AuditAction.PASSKEY_REVOKED,
+        result=audit.AuditResult.SUCCESS,
+        request=request,
+        user_id=user.id,
+        details={"credential": str(stored.id)},
+    )
+    db.commit()

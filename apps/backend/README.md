@@ -360,6 +360,9 @@ Implementadas com a biblioteca `webauthn` (py_webauthn), em `app/services/passke
 | `POST /auth/passkeys/register/verify` | autenticado | `{credential, name?}`: confere e guarda o dispositivo (201) |
 | `POST /auth/passkeys/login/options` | público, com rate limit por IP | opções do `navigator.credentials.get`, sem e-mail |
 | `POST /auth/passkeys/login/verify` | público, com rate limit por IP | `{credential}`: confere e faz o login (como o login com senha) |
+| `GET /auth/passkeys` | autenticado | lista os dispositivos do próprio usuário |
+| `PUT /auth/passkeys/{id}` | autenticado, só o dono | `{name}`: renomeia o dispositivo |
+| `DELETE /auth/passkeys/{id}` | autenticado, só o dono | revoga o dispositivo (204) |
 
 - **Desafio:** 32 bytes aleatórios, guardado no banco, de uso único (queimado antes de conferir a resposta) e válido por 5 minutos. Desafio de registro não serve para login e vice-versa.
 - **Passkey de verdade:** credencial descobrível (o login não pede e-mail) e verificação do usuário (biometria ou PIN) exigida. Por isso a passkey dispensa senha e TOTP e termina no mesmo fluxo do login com senha: sessão, access token, cookie de refresh, auditoria e aviso de IP novo.
@@ -367,6 +370,7 @@ Implementadas com a biblioteca `webauthn` (py_webauthn), em `app/services/passke
 - **Dados do dispositivo (REQ-07):** cada passkey guarda `credential_id`, `public_key`, `counter` e `aaguid` (os quatro campos do requisito), mais nome amigável (padrão "Passkey", normalizado por `clean_text`, até 60 caracteres), `transports`, `created_at` e `last_used_at` (atualizado a cada login). A resposta da API traz só os campos públicos: nunca `public_key`, `counter` nem `credential_id`.
 - **Contador de uso (REQ-08):** regra explícita no service (`_counter_is_valid`), sem depender da biblioteca (que recebe contador atual 0). Guardado 0 e recebido 0 passa, porque passkey sincronizada sempre manda 0. Fora isso, o recebido precisa ser maior que o guardado (5 para 6 passa; 6 para 6 e 6 para 3 não). Se não for, o login é recusado (400 `AUTH_006`), o contador guardado não muda, e a rejeição vai para o audit log (`PASSKEY_COUNTER_MISMATCH`) e vira um evento de segurança para o dono da conta, pois pode ser clonagem.
 - **Origin e rpId (REQ-09):** `WEBAUTHN_RP_ID` (domínio exato da aplicação) e `WEBAUTHN_ORIGIN` vêm do `.env` (`localhost` em dev, o domínio do deploy em produção) e são obrigatórios. Toda cerimônia, de registro e de login, confere a origin exata (esquema, host e porta) e o hash do rpId. A biblioteca não olha `crossOrigin`, então o service recusa também a cerimônia feita dentro de iframe de outro site (`crossOrigin` verdadeiro ou `topOrigin` presente). Tudo vira 400 `AUTH_006`, e o motivo vai para a auditoria.
+- **Gerenciamento (REQ-10):** o usuário lista, renomeia e revoga os próprios dispositivos. Só o dono age: passkey de outro usuário e id inexistente dão o mesmo 404 `RES_001`, sem revelar que ela existe. A lista devolve só `id`, `name`, `aaguid`, `transports`, `created_at` e `last_used_at`. Revogar apaga a credencial (e a chave pública), então ela não autentica mais, e o mesmo dispositivo pode ser registrado de novo. Registro, renomeação e revogação vão para o audit log (`PASSKEY_REGISTERED`, `PASSKEY_RENAMED`, `PASSKEY_REVOKED`).
 - **Corpo das rotas:** schemas tipados e com limites de tamanho, em vez de JSON livre.
 - **Testes:** usam um autenticador WebAuthn de software (`tests/webauthn_soft.py`) que gera atestados e asserções reais.
 

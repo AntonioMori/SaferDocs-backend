@@ -65,6 +65,17 @@ class PasskeyRegisterIn(BaseModel):
         return clean_text(value, min_length=1, max_length=MAX_NAME_LENGTH)  # REQ-64
 
 
+class PasskeyRenameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=240)  # o limite real vale depois de normalizar
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return clean_text(value, min_length=1, max_length=MAX_NAME_LENGTH)  # REQ-64
+
+
 class PasskeyLoginIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -386,3 +386,147 @@ def test_opcoes_usam_o_rp_id_da_configuracao(client, conta):
     registro = client.post("/api/v1/auth/passkeys/register/options", headers=conta["headers"]).json()
     login = client.post("/api/v1/auth/passkeys/login/options").json()
     assert registro["rp"]["id"] == login["rpId"] == settings.webauthn_rp_id
+
+
+# --------------------------------------------------------------- gerenciamento (REQ-10)
+
+URL = "/api/v1/auth/passkeys"
+
+
+@pytest.fixture
+def outra_conta(client):
+    email = f"pk-{uuid.uuid4().hex[:10]}@teste.dev"
+    user_id = uuid.UUID(
+        client.post(
+            "/api/v1/auth/register", json={"name": "Bia Souza", "email": email, "password": SENHA}
+        ).json()["id"]
+    )
+    return {"id": user_id, "headers": {"Authorization": f"Bearer {session_token(user_id)}"}}
+
+
+def _acoes_de_auditoria(user_id, acao):
+    with get_sessionmaker()() as db:
+        return len(
+            db.scalars(select(AuditLog.id).where(AuditLog.user_id == user_id, AuditLog.action == acao)).all()
+        )
+
+
+def test_gerenciamento_exige_autenticacao(client, conta):
+    registrado = registrar(client, conta, SoftAuthenticator()).json()["id"]
+    assert client.get(URL).status_code == 401
+    assert client.put(f"{URL}/{registrado}", json={"name": "x"}).status_code == 401
+    assert client.delete(f"{URL}/{registrado}").status_code == 401
+
+
+def test_lista_so_as_passkeys_do_proprio_usuario(client, conta, outra_conta):
+    minha = registrar(client, conta, SoftAuthenticator(), nome="Notebook").json()["id"]
+    registrar(client, outra_conta, SoftAuthenticator(), nome="Celular da Bia")
+    resposta = client.get(URL, headers=conta["headers"])
+    assert resposta.status_code == 200
+    assert [p["id"] for p in resposta.json()] == [minha]
+
+
+def test_lista_vazia_sem_passkeys(client, conta):
+    assert client.get(URL, headers=conta["headers"]).json() == []
+
+
+def test_lista_so_devolve_campos_publicos(client, conta):
+    registrar(client, conta, SoftAuthenticator())
+    item = client.get(URL, headers=conta["headers"]).json()[0]
+    assert set(item) == {"id", "name", "aaguid", "transports", "created_at", "last_used_at"}
+
+
+def test_lista_mostra_o_ultimo_uso_depois_do_login(client, conta):
+    autenticador = SoftAuthenticator()
+    registrar(client, conta, autenticador)
+    assert client.get(URL, headers=conta["headers"]).json()[0]["last_used_at"] is None
+    entrar(client, autenticador)
+    assert client.get(URL, headers=conta["headers"]).json()[0]["last_used_at"] is not None
+
+
+def test_renomeia_a_propria_passkey_e_audita(client, conta):
+    passkey_id = registrar(client, conta, SoftAuthenticator()).json()["id"]
+    resposta = client.put(
+        f"{URL}/{passkey_id}", json={"name": "  Notebook   do trabalho "}, headers=conta["headers"]
+    )
+    assert resposta.status_code == 200
+    assert resposta.json()["name"] == "Notebook do trabalho"
+    assert client.get(URL, headers=conta["headers"]).json()[0]["name"] == "Notebook do trabalho"
+    assert _acoes_de_auditoria(conta["id"], "PASSKEY_RENAMED") == 1
+
+
+@pytest.mark.parametrize(
+    "corpo", [{"name": ""}, {"name": "   "}, {"name": "<b>"}, {"name": "a" * 61}, {}, {"name": "ok", "x": 1}]
+)
+def test_renomear_com_nome_invalido_e_recusado(client, conta, corpo):
+    passkey_id = registrar(client, conta, SoftAuthenticator(), nome="Original").json()["id"]
+    assert client.put(f"{URL}/{passkey_id}", json=corpo, headers=conta["headers"]).status_code == 400
+    assert client.get(URL, headers=conta["headers"]).json()[0]["name"] == "Original"
+
+
+def test_renomear_passkey_de_outro_usuario_da_404_e_nao_altera(client, conta, outra_conta):
+    alheia = registrar(client, outra_conta, SoftAuthenticator(), nome="Da Bia").json()["id"]
+    resposta = client.put(f"{URL}/{alheia}", json={"name": "Invadida"}, headers=conta["headers"])
+    assert resposta.status_code == 404
+    assert client.get(URL, headers=outra_conta["headers"]).json()[0]["name"] == "Da Bia"
+    assert _acoes_de_auditoria(conta["id"], "PASSKEY_RENAMED") == 0
+
+
+def test_revogar_passkey_de_outro_usuario_da_404_e_nao_apaga(client, conta, outra_conta):
+    alheia = registrar(client, outra_conta, SoftAuthenticator()).json()["id"]
+    assert client.delete(f"{URL}/{alheia}", headers=conta["headers"]).status_code == 404
+    assert len(client.get(URL, headers=outra_conta["headers"]).json()) == 1
+
+
+def test_404_de_passkey_alheia_e_igual_ao_de_passkey_inexistente(client, conta, outra_conta):
+    alheia = registrar(client, outra_conta, SoftAuthenticator()).json()["id"]
+    inexistente = str(uuid.uuid4())
+    for metodo, corpo in (("put", {"json": {"name": "x"}}), ("delete", {})):
+        a = getattr(client, metodo)(f"{URL}/{alheia}", headers=conta["headers"], **corpo)
+        b = getattr(client, metodo)(f"{URL}/{inexistente}", headers=conta["headers"], **corpo)
+        assert a.status_code == b.status_code == 404
+        assert {**a.json(), "request_id": ""} == {**b.json(), "request_id": ""}
+
+
+def test_id_que_nao_e_uuid_e_erro_de_validacao(client, conta):
+    assert client.delete(f"{URL}/nao-e-uuid", headers=conta["headers"]).status_code == 400
+
+
+def test_passkey_revogada_nao_autentica_mais(client, conta):
+    # Critério de aceite: passkey revogada não autentica mais.
+    autenticador = SoftAuthenticator()
+    passkey_id = registrar(client, conta, autenticador).json()["id"]
+    assert entrar(client, autenticador).status_code == 200
+    assert client.delete(f"{URL}/{passkey_id}", headers=conta["headers"]).status_code == 204
+    resposta = entrar(client, autenticador)
+    assert resposta.status_code == 400
+    assert resposta.json()["code"] == "AUTH_006"
+    assert client.get(URL, headers=conta["headers"]).json() == []
+
+
+def test_revogar_audita_e_nao_apaga_as_outras(client, conta):
+    primeira, segunda = SoftAuthenticator(), SoftAuthenticator()
+    id_primeira = registrar(client, conta, primeira).json()["id"]
+    id_segunda = registrar(client, conta, segunda).json()["id"]
+    assert client.delete(f"{URL}/{id_primeira}", headers=conta["headers"]).status_code == 204
+    assert _acoes_de_auditoria(conta["id"], "PASSKEY_REVOKED") == 1
+    assert [p["id"] for p in client.get(URL, headers=conta["headers"]).json()] == [id_segunda]
+    assert entrar(client, segunda).status_code == 200
+
+
+def test_revogar_duas_vezes_da_404_na_segunda(client, conta):
+    passkey_id = registrar(client, conta, SoftAuthenticator()).json()["id"]
+    assert client.delete(f"{URL}/{passkey_id}", headers=conta["headers"]).status_code == 204
+    assert client.delete(f"{URL}/{passkey_id}", headers=conta["headers"]).status_code == 404
+
+
+def test_registro_audita_a_passkey_registrada(client, conta):
+    registrar(client, conta, SoftAuthenticator())
+    assert _acoes_de_auditoria(conta["id"], "PASSKEY_REGISTERED") == 1
+
+
+def test_mesmo_dispositivo_pode_ser_registrado_de_novo_depois_de_revogado(client, conta):
+    autenticador = SoftAuthenticator()
+    passkey_id = registrar(client, conta, autenticador).json()["id"]
+    client.delete(f"{URL}/{passkey_id}", headers=conta["headers"])
+    assert registrar(client, conta, autenticador).status_code == 201
