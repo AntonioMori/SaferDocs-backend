@@ -3,8 +3,8 @@
     prepare_sign: PDF + página/posição + texto do selo + certificado do assinante
                   -> PDF com o campo de assinatura, o selo desenhado e o /Contents
                      reservado, e o SHA-256 dos bytes cobertos pelo /ByteRange.
-    (a API monta o CMS sobre esse digest com a chave do usuário)
-    finish_sign:  PDF preparado + CMS -> PDF assinado (o CMS é escrito no /Contents).
+    (a API confere o preparado, recalcula o digest, monta o CMS com a chave do
+    usuário e o escreve no /Contents: app/pdf/signature_bytes.py)
 
 É a assinatura em etapas do pyHanko ("interrupted signing"), padrão PDF
 Signature da ISO 32000: a assinatura vai dentro do arquivo, num campo de
@@ -16,11 +16,9 @@ import base64
 import binascii
 import io
 import math
-import re
 import uuid
 from typing import Any
 
-import pikepdf
 from asn1crypto import pem, x509
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.pdf_utils.reader import PdfFileReader
@@ -33,6 +31,7 @@ from pyhanko_certvalidator import ValidationContext
 from pdf_worker.ops import OpError, page_sizes
 from pdf_worker.protocol import (
     ERR_BAD_REQUEST,
+    ERR_HAS_JAVASCRIPT,
     ERR_INVALID_POSITION,
     ERR_UNPROCESSABLE,
     MAX_SEAL_LINE_LENGTH,
@@ -44,7 +43,6 @@ from pdf_worker.protocol import (
 # Espaço reservado para o CMS (hex): sobra para P-256 + certificado + atributos.
 CONTENTS_RESERVED_BYTES = 8192
 FIELD_PREFIX = "SaferDocs"
-_BYTE_RANGE = re.compile(rb"/ByteRange\s*\[\s*0\s+(\d+)\s+(\d+)\s+(\d+)\s*\]")
 
 
 def _seal_text(lines: Any) -> str:
@@ -84,22 +82,16 @@ def _certificate(value: Any) -> x509.Certificate:
 
 
 def _incremental_writer(pdf: bytes) -> IncrementalPdfFileWriter:
-    """Writer incremental do pyHanko; se o leitor estrito dele recusar o arquivo, usa a versão do qpdf.
+    """Writer incremental do pyHanko: a assinatura é ACRESCENTADA, o original fica intacto.
 
-    O qpdf reconstrói xref ausente ou quebrada (o PDF já passou por ele na recusa de
-    JavaScript); o pyHanko não. Regravar pelo qpdf mantém o conteúdo e dá um arquivo
-    bem formado para a assinatura incremental.
+    PDF que o leitor estrito do pyHanko recusa (xref ausente ou quebrada) não é
+    regravado: regravar mudaria os bytes do original, e a API exige que o PDF
+    assinado comece com o arquivo exato que o usuário mandou.
     """
     try:
         return IncrementalPdfFileWriter(io.BytesIO(pdf))
-    except Exception:  # noqa: BLE001 - qualquer recusa do leitor estrito cai na versão regravada
-        with pikepdf.open(io.BytesIO(pdf)) as document:
-            # O qpdf só escreve /Size (obrigatório para o pyHanko) se a chave já existir no
-            # trailer; o valor é recalculado na gravação.
-            document.trailer.Size = 0
-            rewritten = io.BytesIO()
-            document.save(rewritten)
-        return IncrementalPdfFileWriter(io.BytesIO(rewritten.getvalue()))
+    except Exception:  # noqa: BLE001 - qualquer recusa do leitor estrito: não processável
+        raise OpError(ERR_UNPROCESSABLE) from None
 
 
 def prepare_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
@@ -143,37 +135,12 @@ def prepare_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], byte
     return {"digest": prepared.document_digest.hex()}, prepared_pdf
 
 
-def _reserved_region(prepared_pdf: bytes) -> tuple[int, int]:
-    """Região do /Contents ainda vazia (`<000...0>`) da última assinatura, pelo /ByteRange."""
-    matches = list(_BYTE_RANGE.finditer(prepared_pdf))
-    if not matches:
-        raise OpError(ERR_BAD_REQUEST)
-    start, end, rest = (int(v) for v in matches[-1].groups())
-    if not (0 < start < end <= len(prepared_pdf) and end + rest == len(prepared_pdf)):
-        raise OpError(ERR_BAD_REQUEST)
-    region = prepared_pdf[start:end]
-    if region[:1] != b"<" or region[-1:] != b">" or region[1:-1].strip(b"0"):
-        raise OpError(ERR_BAD_REQUEST)  # não é um PDF preparado por prepare_sign
-    return start, end
+_ALTERED_ERRORS = (ERR_UNPROCESSABLE, ERR_HAS_JAVASCRIPT)
 
 
-def finish_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
-    """Escreve o CMS (DER, base64 em args["cms"]) no /Contents reservado do PDF preparado."""
-    raw_cms = args.get("cms")
-    if not isinstance(raw_cms, str):
-        raise OpError(ERR_BAD_REQUEST)
-    try:
-        cms_der = base64.b64decode(raw_cms, validate=True)
-    except (ValueError, binascii.Error):
-        raise OpError(ERR_BAD_REQUEST) from None
-    start, end = _reserved_region(pdf)
-    hex_cms = cms_der.hex().encode("ascii")
-    capacity = end - start - 2
-    if not cms_der or cms_der[:1] != b"\x30" or len(hex_cms) > capacity:
-        raise OpError(ERR_BAD_REQUEST)
-    signed = bytearray(pdf)
-    signed[start + 1 : end - 1] = hex_cms + b"0" * (capacity - len(hex_cms))
-    return {}, bytes(signed)
+def _looks_signed(pdf: bytes) -> bool:
+    """O arquivo tem o dicionário de uma assinatura PDF (/ByteRange), mesmo que não dê mais para lê-lo."""
+    return b"/ByteRange" in pdf
 
 
 def verify(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
@@ -184,19 +151,31 @@ def verify(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
     compara a chave pública dele com a registrada para o usuário (REQ-51).
     """
     del args
-    page_sizes(pdf)  # recusa JavaScript e PDF que não abre, como em toda operação
-    try:
-        reader = PdfFileReader(io.BytesIO(pdf), strict=False)
-        signatures = list(reader.embedded_signatures)
-    except Exception:  # noqa: BLE001 - estrutura que o pyHanko não lê: não dá para verificar
-        raise OpError(ERR_UNPROCESSABLE) from None
     result: dict[str, Any] = {
-        "has_signature": bool(signatures),
+        "has_signature": False,
         "cms_valid": False,
         "covers_whole_file": False,
         "signer_public_key_der": None,
-        "signature_count": len(signatures),
+        "signature_count": 0,
     }
+    try:
+        page_sizes(pdf)  # recusa JavaScript e PDF que não abre, como em toda operação
+        reader = PdfFileReader(io.BytesIO(pdf), strict=False)
+        signatures = list(reader.embedded_signatures)
+    except Exception as exc:  # noqa: BLE001 - estrutura que não dá para ler nem verificar
+        # Um PDF assinado pelo SaferDocs abre e não tem JavaScript (a assinatura recusa os
+        # dois). Se ele tem cara de assinado e não passa mais, foi alterado depois: é
+        # adulterado, não "PDF inválido" (REQ-52).
+        if _looks_signed(pdf) and (not isinstance(exc, OpError) or exc.code in _ALTERED_ERRORS):
+            result.update(has_signature=True, signature_count=1)
+            return result, b""
+        if isinstance(exc, OpError):
+            raise
+        raise OpError(ERR_UNPROCESSABLE) from None
+    # Dicionário de assinatura que o pyHanko ignora (SubFilter desconhecido etc.): há assinatura
+    # que não dá para validar, então é adulterado, não "não encontrada".
+    has_signature = bool(signatures) or _looks_signed(pdf)
+    result.update(has_signature=has_signature, signature_count=len(signatures) or int(has_signature))
     if not signatures:
         return result, b""
     latest = max(signatures, key=lambda s: s.signed_revision)

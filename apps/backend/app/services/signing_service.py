@@ -11,7 +11,7 @@ no arquivo. O PDF nunca é guardado: só os hashes e os metadados.
 import datetime as dt
 import hashlib
 import ipaddress
-import math
+import re
 import uuid
 from dataclasses import dataclass
 
@@ -48,24 +48,29 @@ class SealPosition:
     y: float
 
 
+_INTEGER = re.compile(r"[0-9]{1,6}")
+_DECIMAL = re.compile(r"[0-9]{1,5}(\.[0-9]{1,6})?")
+
+
 def parse_position(fields: dict[str, str]) -> SealPosition:
-    """Página (a partir de 1) e canto inferior esquerdo do selo, em pontos PDF."""
+    """Página (a partir de 1) e canto inferior esquerdo do selo, em pontos PDF.
+
+    Só dígitos e ponto decimal: `int()`/`float()` sozinhos aceitariam "1_0",
+    "1e3", " 10 ", "inf" e dígitos de outros alfabetos.
+    """
     errors: list[FieldError] = []
     page = 0
-    try:
-        page = int(fields["page"])
-        if not 1 <= page <= MAX_PAGE:
-            errors.append(FieldError("page", "deve ser >= 1"))
-    except ValueError:
-        errors.append(FieldError("page", "deve ser um número inteiro"))
+    raw_page = fields.get("page", "")
+    if _INTEGER.fullmatch(raw_page) and 1 <= int(raw_page) <= MAX_PAGE:
+        page = int(raw_page)
+    else:
+        errors.append(FieldError("page", "deve ser um número inteiro >= 1"))
     coords: dict[str, float] = {}
     for name in ("x", "y"):
-        try:
-            value = float(fields[name])
-            if not math.isfinite(value) or not 0 <= value <= MAX_COORDINATE:
-                raise ValueError
-            coords[name] = round(value, 2)
-        except ValueError:
+        raw = fields.get(name, "")
+        if _DECIMAL.fullmatch(raw) and 0 <= float(raw) <= MAX_COORDINATE:
+            coords[name] = round(float(raw), 2)
+        else:
             errors.append(FieldError(name, "deve ser um número entre 0 e 14400"))
     if errors:
         raise AppError(ErrorCode.VALIDATION, fields=errors)
@@ -94,8 +99,12 @@ def seal_lines(
 
 def _signer_cert_pem(db: Session, user: User) -> bytes:
     if not user.signing_cert or not user.signing_private_key_enc:
-        # Conta criada antes do REQ-45: gera o par agora, uma vez.
-        generate_user_keys(db, user)
+        # Conta criada antes do REQ-45: gera o par agora, uma vez. A linha do usuário fica
+        # travada: duas assinaturas simultâneas não geram dois pares (a primeira valeria
+        # para um PDF já devolvido e a segunda sobrescreveria a chave registrada).
+        db.refresh(user, with_for_update=True)
+        if not user.signing_cert or not user.signing_private_key_enc:
+            generate_user_keys(db, user)
         db.commit()
     return x509.load_der_x509_certificate(user.signing_cert).public_bytes(serialization.Encoding.PEM)
 
