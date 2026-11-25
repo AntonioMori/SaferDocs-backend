@@ -16,6 +16,7 @@ import base64
 import binascii
 import io
 import math
+import re
 import uuid
 from typing import Any
 
@@ -138,9 +139,17 @@ def prepare_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], byte
 _ALTERED_ERRORS = (ERR_UNPROCESSABLE, ERR_HAS_JAVASCRIPT)
 
 
+# Marcas do dicionário de uma assinatura PDF: /ByteRange, o SubFilter do CMS, o /Type /Sig e um
+# /Contents com hexadecimal longo (o CMS). O pyHanko escreve /Contents antes dos outros, então um
+# arquivo cortado no meio do CMS só tem esta última marca.
+_SIGNED_MARKS = re.compile(
+    rb"/ByteRange|/adbe\.pkcs7\.detached|/Type\s*/Sig(?![A-Za-z0-9])|/Contents\s*<[0-9A-Fa-f]{64}"
+)
+
+
 def _looks_signed(pdf: bytes) -> bool:
-    """O arquivo tem o dicionário de uma assinatura PDF (/ByteRange), mesmo que não dê mais para lê-lo."""
-    return b"/ByteRange" in pdf
+    """O arquivo tem o dicionário de uma assinatura PDF, mesmo que não dê mais para lê-lo."""
+    return _SIGNED_MARKS.search(pdf) is not None
 
 
 def verify(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
