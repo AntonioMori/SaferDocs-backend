@@ -1,0 +1,63 @@
+# CI do backend. O job "audit" atende o REQ-66: falha se alguma dependência
+# (da API ou do pdf-worker) tiver vulnerabilidade conhecida.
+name: backend-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # toda segunda: vulnerabilidades novas aparecem sem mudança no código
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Auditoria de dependências (pip-audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Exporta as dependências travadas da API
+        run: uv export --frozen --no-hashes --no-emit-project --format requirements-txt > /tmp/requirements-api.txt
+      - name: pip-audit da API
+        run: uvx pip-audit --strict --progress-spinner off -r /tmp/requirements-api.txt
+      - name: pip-audit do pdf-worker
+        run: uvx pip-audit --strict --progress-spinner off -r pdf_worker/requirements.txt
+
+  test:
+    name: Testes e lint
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: saferdocs
+          POSTGRES_PASSWORD: saferdocs_test
+          POSTGRES_DB: saferdocs_test
+        ports: ["55433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U saferdocs -d saferdocs_test"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: apps/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q -p no:warnings
+
+  worker-linux:
+    name: Testes do servidor do pdf-worker (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose --profile test run --rm worker-tests
