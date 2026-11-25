@@ -23,8 +23,12 @@ from typing import Any
 import pikepdf
 from asn1crypto import pem, x509
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import fields, signers
+from pyhanko.sign.validation import validate_pdf_signature
+from pyhanko.sign.validation.status import SignatureCoverageLevel
 from pyhanko.stamp import TextStampStyle
+from pyhanko_certvalidator import ValidationContext
 
 from pdf_worker.ops import OpError, page_sizes
 from pdf_worker.protocol import (
@@ -170,3 +174,39 @@ def finish_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes
     signed = bytearray(pdf)
     signed[start + 1 : end - 1] = hex_cms + b"0" * (capacity - len(hex_cms))
     return {}, bytes(signed)
+
+
+def verify(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
+    """Confere a assinatura embutida mais recente (REQ-50): CMS, integridade e cobertura.
+
+    Não regrava nada: a assinatura vale para os bytes exatos do arquivo recebido.
+    A confiança no certificado não vem de uma autoridade (é autoassinado): a API
+    compara a chave pública dele com a registrada para o usuário (REQ-51).
+    """
+    del args
+    page_sizes(pdf)  # recusa JavaScript e PDF que não abre, como em toda operação
+    try:
+        reader = PdfFileReader(io.BytesIO(pdf), strict=False)
+        signatures = list(reader.embedded_signatures)
+    except Exception:  # noqa: BLE001 - estrutura que o pyHanko não lê: não dá para verificar
+        raise OpError(ERR_UNPROCESSABLE) from None
+    result: dict[str, Any] = {
+        "has_signature": bool(signatures),
+        "cms_valid": False,
+        "covers_whole_file": False,
+        "signer_public_key_der": None,
+        "signature_count": len(signatures),
+    }
+    if not signatures:
+        return result, b""
+    latest = max(signatures, key=lambda s: s.signed_revision)
+    try:
+        cert = latest.signer_cert
+        context = ValidationContext(trust_roots=[cert], allow_fetching=False)
+        status = validate_pdf_signature(latest, signer_validation_context=context)
+        result["cms_valid"] = bool(status.intact and status.valid)
+        result["covers_whole_file"] = status.coverage == SignatureCoverageLevel.ENTIRE_FILE
+        result["signer_public_key_der"] = base64.b64encode(cert.public_key.dump()).decode("ascii")
+    except Exception:  # noqa: BLE001 - CMS quebrado ou forjado: assinatura presente mas inválida
+        result["cms_valid"] = False
+    return result, b""
