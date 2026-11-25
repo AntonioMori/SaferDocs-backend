@@ -1,23 +1,103 @@
-"""Chaves de assinatura por usuário (REQ-45).
+"""Chaves de assinatura por usuário (REQ-45 e REQ-59).
 
 Chamada no cadastro, depois de o usuário ser criado:
 
     generate_user_keys(db, user)
 
-Preenche `user.signing_public_key`, `user.signing_cert` (X.509 autoassinado
-com o nome do usuário) e `user.signing_private_key_enc` (cifrada com
-`aead.encrypt(AeadContext.SIGNING_KEY, ..., associated_data=user.id.bytes)`).
+Gera um par ECDSA P-256 e um certificado X.509 autoassinado com o nome do
+usuário (o CMS embutido no PDF carrega o certificado de quem assinou).
+Preenche `user.signing_public_key` (SubjectPublicKeyInfo DER),
+`user.signing_cert` (DER) e `user.signing_private_key_enc`: a privada em
+PKCS#8, cifrada com AES-256-GCM numa chave derivada da MASTER_KEY só para
+isso (`AeadContext.SIGNING_KEY`), com o id do usuário como dado associado.
 Não faz commit: quem chama controla a transação.
 
-STUB (INFRA-02) | implementação real: REQ-45 (dono: v1ct0rjoao).
-Hoje não faz nada, com a mesma assinatura.
+A privada decifrada nunca sai deste módulo (REQ-59): `sign_with_user_key`
+recebe os bytes a assinar e devolve só a assinatura. Ela não é logada, não
+volta em resposta nem aparece em mensagem de erro.
 """
 
+import datetime as dt
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from sqlalchemy.orm import Session
 
+from app.core.errors import AppError, ErrorCode
+from app.crypto.aead import AeadContext, DecryptionError, decrypt, encrypt
 from app.db.models import User
+
+CERT_VALIDITY = dt.timedelta(days=3650)
+MAX_CN_LENGTH = 64  # limite do X.520 para o commonName
 
 
 def generate_user_keys(db: Session, user: User) -> None:
     """Gera e associa ao usuário o par de chaves de assinatura."""
-    del db, user  # usados pela implementação real
+    del db  # o usuário já está na sessão; quem chama faz o commit
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_key = private_key.public_key()
+    subject = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, (user.name or "SaferDocs")[:MAX_CN_LENGTH]),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "SaferDocs"),
+            x509.NameAttribute(NameOID.SERIAL_NUMBER, str(user.id)),
+        ]
+    )
+    now = dt.datetime.now(dt.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(public_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(minutes=5))
+        .not_valid_after(now + CERT_VALIDITY)
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=True,  # não repúdio
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .sign(private_key, hashes.SHA256())
+    )
+    private_der = private_key.private_bytes(
+        serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    )
+    user.signing_public_key = public_key.public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    user.signing_cert = cert.public_bytes(serialization.Encoding.DER)
+    user.signing_private_key_enc = encrypt(
+        AeadContext.SIGNING_KEY, private_der, associated_data=user.id.bytes
+    )
+
+
+def sign_with_user_key(user: User, data: bytes) -> bytes:
+    """Assina `data` (ECDSA P-256 com SHA-256) com a chave privada do usuário. Devolve a assinatura DER.
+
+    A chave é decifrada aqui, usada e descartada. Erros não citam a chave nem o motivo
+    criptográfico: qualquer falha vira um erro interno genérico.
+    """
+    if not user.signing_private_key_enc:
+        raise AppError(ErrorCode.INTERNAL)
+    try:
+        private_der = decrypt(
+            AeadContext.SIGNING_KEY, user.signing_private_key_enc, associated_data=user.id.bytes
+        )
+        private_key = serialization.load_der_private_key(private_der, password=None)
+    except (DecryptionError, ValueError):
+        raise AppError(ErrorCode.INTERNAL) from None
+    if not isinstance(private_key, ec.EllipticCurvePrivateKey):
+        raise AppError(ErrorCode.INTERNAL)
+    return private_key.sign(data, ec.ECDSA(hashes.SHA256()))
