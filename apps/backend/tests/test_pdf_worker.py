@@ -71,7 +71,7 @@ def test_inspect_devolve_paginas_e_tamanhos():
     header, body = _response(task.handle(_request(pdf=pdf)))
     assert header == {
         "ok": True,
-        "result": {"page_count": 3, "pages": [{"width": 612.0, "height": 792.0}] * 3},
+        "result": {"page_count": 3, "pages": [{"width": 612.0, "height": 792.0, "rotate": 0}] * 3},
     }
     assert body == b""
 
@@ -399,4 +399,34 @@ def test_mediabox_herdada_do_pages_e_decimal_funcionam():
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 /MediaBox [10 20 605.5 862] >>",
     )
     header, _ = _response(task.handle(_request(pdf=pdf)))
-    assert header["result"]["pages"] == [{"width": 595.5, "height": 842.0}]
+    assert header["result"]["pages"] == [{"width": 595.5, "height": 842.0, "rotate": 0}]
+
+
+@pytest.mark.parametrize(
+    ("pagina", "esperado"),
+    [
+        # QA: o selo validado só contra o MediaBox podia cair fora da área visível.
+        (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /CropBox [100 100 400 500] >>", (300, 400)),
+        # CropBox maior que o MediaBox: vale a interseção.
+        (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /CropBox [-50 -50 900 900] >>", (612, 792)),
+        # CropBox inválido é ignorado, como nos leitores.
+        (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /CropBox [1 2 3] >>", (612, 792)),
+    ],
+)
+def test_area_visivel_e_o_mediabox_recortado_pelo_cropbox(pagina, esperado):
+    header, _ = _response(task.handle(_request(pdf=_pdf_com_pagina(pagina))))
+    largura, altura = esperado
+    assert header["result"]["pages"] == [{"width": float(largura), "height": float(altura), "rotate": 0}]
+
+
+def test_cropbox_fora_da_pagina_e_recusado():
+    pagina = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /CropBox [700 800 900 900] >>"
+    header, _ = _response(task.handle(_request(pdf=_pdf_com_pagina(pagina))))
+    assert header == {"ok": False, "error": "UNPROCESSABLE"}
+
+
+@pytest.mark.parametrize(("valor", "esperado"), [(b"90", 90), (b"-90", 270), (b"450", 90), (b"45", 0)])
+def test_rotacao_da_pagina_vem_no_inspect(valor, esperado):
+    pagina = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate " + valor + b" >>"
+    header, _ = _response(task.handle(_request(pdf=_pdf_com_pagina(pagina))))
+    assert header["result"]["pages"][0]["rotate"] == esperado

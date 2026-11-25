@@ -77,10 +77,56 @@ def test_escopos_e_chaves_sao_independentes(relogio):
 
 def test_memoria_limitada_descarta_chaves_antigas(relogio):
     limiter = SlidingWindowLimiter(max_keys=100)
-    for i in range(1000):  # atacante trocando de chave a cada pedido
-        relogio.agora = 1000 + i * 0.001
+    for i in range(1000):  # atacante trocando de chave a cada pedido, com as antigas já expiradas
+        relogio.agora = 1000 + i * 61
         limiter.hit("s", f"k{i}", 5, 60)
     assert len(limiter) <= 100
+
+
+def test_tabela_cheia_nao_apaga_o_contador_de_quem_esta_bloqueado(relogio):
+    # QA: encher a tabela com chaves novas não pode zerar o bloqueio de uma conta.
+    limiter = SlidingWindowLimiter(max_keys=10)
+    relogio.agora = 1000
+    for _ in range(3):
+        limiter.hit("login-account", "vitima@x.dev", 3, 3600)
+    assert limiter.hit("login-account", "vitima@x.dev", 3, 3600) is not None
+    for i in range(50):
+        relogio.agora = 1000 + i
+        limiter.hit("login-account", f"lixo{i}@x.dev", 3, 3600)
+    assert len(limiter) <= 10
+    assert limiter.hit("login-account", "vitima@x.dev", 3, 3600) is not None
+
+
+def test_tabela_cheia_de_chaves_ativas_faz_a_nova_esperar(relogio):
+    limiter = SlidingWindowLimiter(max_keys=2)
+    relogio.agora = 1000
+    assert limiter.hit("s", "a", 5, 60) is None
+    relogio.agora = 1010
+    assert limiter.hit("s", "b", 5, 60) is None
+    espera = limiter.hit("s", "c", 5, 60)
+    assert espera == 50  # até "a" expirar
+    relogio.agora = 1061
+    assert limiter.hit("s", "c", 5, 60) is None  # "a" expirou e saiu
+    assert limiter.hit("s", "b", 5, 60) is None  # "b" continua com o contador
+
+
+def test_expiracao_usa_a_janela_de_cada_chave(relogio):
+    # QA: a chave de janela de 1 h não pode sair porque a chave nova usa janela de 1 min.
+    limiter = SlidingWindowLimiter(max_keys=1)
+    relogio.agora = 1000
+    limiter.hit("hora", "a", 1, 3600)
+    relogio.agora = 1100
+    assert limiter.hit("minuto", "b", 1, 60) is not None
+    assert limiter.hit("hora", "a", 1, 3600) is not None
+
+
+def test_retry_after_espera_ate_caber_de_novo(relogio):
+    limiter = SlidingWindowLimiter()
+    for t in (1000, 1010, 1020):
+        relogio.agora = t
+        limiter.hit("s", "k", 3, 60)
+    relogio.agora = 1030
+    assert limiter.hit("s", "k", 3, 60) == 30  # a de 1000 sai em 1060
 
 
 def test_concorrencia_nao_deixa_passar_mais_que_o_limite():
