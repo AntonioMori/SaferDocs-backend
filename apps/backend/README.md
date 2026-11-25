@@ -291,6 +291,8 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
 
 **Selo (REQ-47):** o selo visual (240 x 80 pt) mostra o nome de quem assinou, a data e a hora em UTC, o SHA-256 completo do documento original (em duas linhas) e o id da assinatura, que é gerado antes de o selo ser desenhado. Nome longo é cortado com "..." e caracteres fora do WinAnsi (a fonte padrão do selo) viram "?".
 
+**Registro (REQ-48):** cada assinatura grava em `signatures` o SHA-256 do original e do assinado, o usuário, a data e hora (a mesma do selo), o IP, o User-Agent e a posição do selo, e vai para a auditoria como `DOCUMENT_SIGNED` (falhas também, com o código do erro). O PDF só volta para o usuário depois do commit. `GET /api/v1/documents/signatures` lista as assinaturas do próprio usuário, só com metadados e hashes.
+
 A autenticação roda antes de ler o upload. Se o leitor do pyHanko recusar o arquivo (por exemplo, xref ausente que o qpdf consegue reconstruir), o worker assina a versão regravada pelo qpdf.
 
 ## Testes e lint
