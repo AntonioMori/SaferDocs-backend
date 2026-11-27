@@ -48,18 +48,40 @@ FIELD_PREFIX = "SaferDocs"
 _OUR_FIELD = re.compile(rf"{FIELD_PREFIX}-[0-9a-f]{{32}}")
 
 
-def _already_signed_by_us(pdf: bytes) -> bool:
-    """O PDF já tem uma assinatura do SaferDocs (campo com o nosso prefixo).
+def _is_ours(sig: Any) -> bool:
+    return _OUR_FIELD.fullmatch(sig.field_name or "") is not None
 
-    Assinar de novo o arquivo que o SaferDocs devolveu criaria uma segunda assinatura sobre a
-    primeira: o documento é o mesmo, então a segunda é recusada. Assinaturas de outros sistemas
-    não impedem: o SaferDocs pode assinar um PDF que já veio assinado de fora.
+
+def _check(sig: Any) -> Any:
+    """Valida o CMS de uma assinatura embutida. Confiança: o próprio certificado (autoassinado);
+    a API compara a chave pública com a registrada para o usuário (REQ-51)."""
+    cert = sig.signer_cert
+    context = ValidationContext(trust_roots=[cert], allow_fetching=False)
+    return validate_pdf_signature(sig, signer_validation_context=context)
+
+
+def _already_signed_by(pdf: bytes, cert: x509.Certificate) -> bool:
+    """Esta pessoa já tem uma assinatura válida do SaferDocs neste PDF.
+
+    Outra pessoa pode assinar por cima (a assinatura anterior continua valendo para a revisão
+    dela); a mesma pessoa, não: seria assinar duas vezes o mesmo documento. Uma assinatura dela
+    que não confere mais não conta. Assinaturas de outros sistemas também não impedem.
     """
     try:
         signatures = PdfFileReader(io.BytesIO(pdf), strict=False).embedded_signatures
     except Exception:  # noqa: BLE001 - se nem abre, a assinatura vai recusar como não processável
         return False
-    return any(_OUR_FIELD.fullmatch(sig.field_name or "") for sig in signatures)
+    key = cert.public_key.dump()
+    for sig in signatures:
+        try:
+            if not _is_ours(sig) or sig.signer_cert.public_key.dump() != key:
+                continue
+            status = _check(sig)
+        except Exception:  # noqa: BLE001, S112 - CMS quebrado: não é uma assinatura válida dela
+            continue
+        if status.intact and status.valid:
+            return True
+    return False
 
 
 def _number(value: Any) -> float:
@@ -114,7 +136,7 @@ def prepare_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], byte
     size = pages[page - 1]
     if not (0 <= x and 0 <= y and x + SEAL_WIDTH <= size["width"] and y + SEAL_HEIGHT <= size["height"]):
         raise OpError(ERR_INVALID_POSITION)
-    if _already_signed_by_us(pdf):
+    if _already_signed_by(pdf, cert):
         raise OpError(ERR_ALREADY_SIGNED)
 
     async def digest() -> tuple[Any, bytes]:
@@ -158,8 +180,42 @@ def _looks_signed(pdf: bytes) -> bool:
     return _SIGNED_MARKS.search(pdf) is not None
 
 
+def _describe(sig: Any, pdf_len: int) -> dict[str, Any]:
+    """Uma assinatura embutida: do SaferDocs ou não, se o CMS confere, o que cobre e com que chave.
+
+    `revision_end` é onde termina a revisão assinada: a API calcula o hash desse trecho, que é o
+    arquivo que o assinante recebeu, e o confere com o registro (REQ-51).
+    """
+    item: dict[str, Any] = {
+        "ours": _is_ours(sig),
+        "cms_valid": False,
+        "covers_whole_file": False,
+        "covers_revision": False,
+        "revision_end": None,
+        "signer_public_key_der": None,
+    }
+    try:
+        byte_range = [int(v) for v in sig.sig_object["/ByteRange"]]
+        end = byte_range[2] + byte_range[3]
+        if 0 < end <= pdf_len:
+            item["revision_end"] = end
+        status = _check(sig)
+        item["cms_valid"] = bool(status.intact and status.valid)
+        item["covers_whole_file"] = status.coverage == SignatureCoverageLevel.ENTIRE_FILE
+        item["covers_revision"] = (
+            status.coverage is not None and status.coverage >= SignatureCoverageLevel.ENTIRE_REVISION
+        )
+        item["signer_public_key_der"] = base64.b64encode(sig.signer_cert.public_key.dump()).decode("ascii")
+    except Exception:  # noqa: BLE001 - CMS quebrado ou forjado: assinatura presente mas inválida
+        item["cms_valid"] = False
+    return item
+
+
 def verify(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
-    """Confere a assinatura embutida mais recente (REQ-50): CMS, integridade e cobertura.
+    """Confere as assinaturas embutidas (REQ-50): CMS, integridade e cobertura de cada uma.
+
+    Os campos de cima são os da mais recente; `signatures` traz todas, da mais antiga para a
+    mais recente, para a API conferir a cadeia quando várias pessoas assinaram.
 
     Não regrava nada: a assinatura vale para os bytes exatos do arquivo recebido.
     A confiança no certificado não vem de uma autoridade (é autoassinado): a API
@@ -172,6 +228,7 @@ def verify(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
         "covers_whole_file": False,
         "signer_public_key_der": None,
         "signature_count": 0,
+        "signatures": [],
     }
     try:
         page_sizes(pdf)  # recusa JavaScript e PDF que não abre, como em toda operação
@@ -193,14 +250,13 @@ def verify(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
     result.update(has_signature=has_signature, signature_count=len(signatures) or int(has_signature))
     if not signatures:
         return result, b""
-    latest = max(signatures, key=lambda s: s.signed_revision)
-    try:
-        cert = latest.signer_cert
-        context = ValidationContext(trust_roots=[cert], allow_fetching=False)
-        status = validate_pdf_signature(latest, signer_validation_context=context)
-        result["cms_valid"] = bool(status.intact and status.valid)
-        result["covers_whole_file"] = status.coverage == SignatureCoverageLevel.ENTIRE_FILE
-        result["signer_public_key_der"] = base64.b64encode(cert.public_key.dump()).decode("ascii")
-    except Exception:  # noqa: BLE001 - CMS quebrado ou forjado: assinatura presente mas inválida
-        result["cms_valid"] = False
+    ordered = sorted(signatures, key=lambda s: s.signed_revision)
+    described = [_describe(sig, len(pdf)) for sig in ordered]
+    latest = described[-1]
+    result.update(
+        cms_valid=latest["cms_valid"],
+        covers_whole_file=latest["covers_whole_file"],
+        signer_public_key_der=latest["signer_public_key_der"],
+        signatures=described,
+    )
     return result, b""

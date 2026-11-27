@@ -89,7 +89,7 @@ CATALOG: dict[ErrorCode, ErrorSpec] = {
     ErrorCode.DOC_HAS_JAVASCRIPT: ErrorSpec(400, "PDFs com JavaScript embutido não são aceitos."),
     ErrorCode.DOC_UNPROCESSABLE: ErrorSpec(400, "Não foi possível processar o PDF."),
     ErrorCode.DOC_INVALID_POSITION: ErrorSpec(400, "Página ou posição do selo inválida."),
-    ErrorCode.DOC_ALREADY_SIGNED: ErrorSpec(409, "Este PDF já foi assinado no SaferDocs."),
+    ErrorCode.DOC_ALREADY_SIGNED: ErrorSpec(409, "Você já assinou este PDF no SaferDocs."),
     ErrorCode.VALIDATION: ErrorSpec(400, "Dados inválidos."),
     ErrorCode.NOT_FOUND: ErrorSpec(404, "Recurso não encontrado."),
     ErrorCode.METHOD_NOT_ALLOWED: ErrorSpec(405, "Método não permitido para este recurso."),

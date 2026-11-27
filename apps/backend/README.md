@@ -137,7 +137,7 @@ Uso dos status HTTP: **400** erro do cliente, **401** não autenticado, **403** 
 | `DOC_003` | 400 | PDFs com JavaScript embutido não são aceitos. |
 | `DOC_004` | 400 | Não foi possível processar o PDF. |
 | `DOC_005` | 400 | Página ou posição do selo inválida. |
-| `DOC_006` | 409 | Este PDF já foi assinado no SaferDocs. |
+| `DOC_006` | 409 | Você já assinou este PDF no SaferDocs. |
 | `VAL_001` | 400 | Dados inválidos. |
 | `RES_001` | 404 | Recurso não encontrado. |
 | `RES_002` | 405 | Método não permitido para este recurso. |
@@ -299,6 +299,8 @@ Todo PDF passa pelos filtros na ordem da Figura 9 do enunciado. Os dois primeiro
 
 **A API não confia no worker:** `check_prepared` exige que o PDF preparado comece com os bytes do original, ache o último `/ByteRange` depois deles, confirme que ele cobre o arquivo inteiro com o `/Contents` zerado e recalcule o SHA-256 ali mesmo. O digest que o worker informou precisa bater com o recalculado, senão a resposta é 500 `SYS_001`. Assim um worker comprometido não consegue fazer a API assinar bytes que ela não viu.
 
+**Várias pessoas no mesmo arquivo:** quem recebe um PDF já assinado no SaferDocs pode assinar por cima. A nova assinatura entra numa revisão incremental, e as anteriores continuam valendo para a revisão delas. A mesma pessoa não assina duas vezes: se o PDF já tem uma assinatura válida do SaferDocs feita com a chave de quem está assinando, a resposta é 409 `DOC_006`, sem registrar assinatura (a recusa vai para a auditoria). Uma assinatura dela que não confere mais não impede, e assinaturas de outros sistemas também não.
+
 **Selo (REQ-47):** o selo visual (240 x 80 pt) mostra o nome de quem assinou, a data e a hora em UTC, o SHA-256 completo do documento original (em duas linhas) e o id da assinatura, que é gerado antes de o selo ser desenhado. Nome longo é cortado com "..." e caracteres fora do WinAnsi (a fonte padrão do selo) viram "?".
 
 **Registro (REQ-48):** cada assinatura grava em `signatures` o SHA-256 do original e do assinado, o usuário, a data e hora (a mesma do selo), o IP, o User-Agent e a posição do selo, e vai para a auditoria como `DOCUMENT_SIGNED` (falhas também, com o código do erro). O PDF só volta para o usuário depois do commit. `GET /api/v1/documents/signatures` lista as assinaturas do próprio usuário, só com metadados e hashes.
@@ -323,10 +325,11 @@ A autenticação roda antes de ler o upload. PDF sem xref legível, que o leitor
 |---|---|
 | Sem assinatura embutida (um selo só desenhado não conta) | `{"status": "NAO_ENCONTRADA"}` |
 | Assinatura inválida, que não cobre o arquivo inteiro (revisão acrescentada depois de assinar) ou com hash que não bate com o registrado | `{"status": "ADULTERADO"}` |
-| Assinatura válida, cobrindo o arquivo inteiro, com o SHA-256 registrado e a chave pública do usuário que assinou | `{"status": "INTEGRO", "signer_name", "signed_at", "signature_id"}` |
+| Assinatura válida, cobrindo o arquivo inteiro, com o SHA-256 registrado e a chave pública do usuário que assinou | `{"status": "INTEGRO", "signer_name", "signed_at", "signature_id", "signers"}` |
 
 - **Verificação criptográfica (REQ-50):** o worker valida a assinatura mais recente com o pyHanko. Ele confere que o CMS bate com os bytes do `/ByteRange` e que a assinatura cobre o arquivo inteiro, e devolve a chave pública do certificado embutido. O PDF nunca é regravado na verificação. Um PDF assinado que foi corrompido ou alterado (tem `/ByteRange`, mas não abre mais, tem JavaScript, o leitor falha ou o dicionário da assinatura não dá para validar, como um `/SubFilter` desconhecido) é reportado como ADULTERADO, e não como PDF inválido (`DOC_004` ou `DOC_003`) nem como `NAO_ENCONTRADA`. Só o arquivo sem nenhum sinal de assinatura que não abre continua dando `DOC_004`.
 - **Comparação dos hashes (REQ-51):** o SHA-256 do arquivo é buscado em `signatures.signed_sha256`, e o registro só vale se a chave do certificado embutido for a do usuário que assinou.
+- **Vários assinantes:** o worker descreve todas as assinaturas, e a API confere cada uma do SaferDocs, da primeira à última. A última cobre o arquivo inteiro; cada anterior cobre a revisão dela, e o SHA-256 desse trecho (o arquivo que aquele assinante recebeu) tem de estar registrado com a chave dele. A cadeia também tem de fechar: o `original_sha256` de cada assinatura é o arquivo assinado pela anterior, então nada pode entrar entre duas assinaturas. Qualquer quebra dá ADULTERADO. Íntegro, `signers` lista todas (nome, data e id), da primeira para a última, e `signer_name`, `signed_at` e `signature_id` são os da última. Assinaturas de outros sistemas feitas antes da primeira do SaferDocs não entram na conta.
 - **Rate limit (REQ-53):** limite por IP de `RATE_LIMIT_VERIFY_PER_IP` (10/min), com escopo próprio (não divide vaga com o login), verificado antes de ler o upload.
 - **PDF descartado (REQ-54):** o upload é lido em memória, passa pelo worker e é descartado. Um teste faz qualquer gravação em disco falhar durante a verificação; outro põe uma marca única dentro do PDF e confere que ela não aparece em nenhuma tabela do banco nem no log.
 - **Auditoria:** toda verificação vai para ela como `DOCUMENT_VERIFIED`, sem usuário, com o resultado (e o id da assinatura, quando íntegro).
