@@ -18,7 +18,7 @@ def assinar(pdf: bytes, assinante=None, *, por_fora: bool = False):
     """Assina com o worker. `por_fora` simula outra ferramenta, que não recusa um PDF que o
     SaferDocs já assinou (o SaferDocs recusa: DOC_006)."""
     user, cert_pem = assinante or make_signer()
-    trava = mock.patch("pdf_worker.sign._already_signed_by_us", return_value=False) if por_fora else None
+    trava = mock.patch("pdf_worker.sign._already_signed_by", return_value=False) if por_fora else None
     with trava or mock.MagicMock():
         preparado = pdf_client.prepare_sign(
             pdf, page=1, x=10, y=10, seal_lines=["Teste"], signer_cert_pem=cert_pem

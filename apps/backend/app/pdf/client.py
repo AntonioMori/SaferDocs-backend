@@ -18,7 +18,7 @@ worker viram AppError:
   ErrorCode.DOC_UNPROCESSABLE (400);
 - JavaScript embutido: ErrorCode.DOC_HAS_JAVASCRIPT (400, REQ-63);
 - posição do selo fora da página: ErrorCode.DOC_INVALID_POSITION (400);
-- PDF que já tem assinatura do SaferDocs: ErrorCode.DOC_ALREADY_SIGNED (409);
+- quem assina já tem uma assinatura válida do SaferDocs no PDF: ErrorCode.DOC_ALREADY_SIGNED (409);
 - worker ocupado (todas as vagas em uso além do prazo da fila):
   ErrorCode.RATE_LIMITED (429) com `Retry-After`;
 - worker fora do ar ou resposta inválida: ErrorCode.INTERNAL (500).
@@ -77,12 +77,25 @@ class PreparedSignature:
 
 
 @dataclass(frozen=True)
+class EmbeddedSignature:
+    """Uma das assinaturas do PDF, da mais antiga para a mais recente."""
+
+    ours: bool  # campo criado pelo SaferDocs
+    cms_valid: bool  # o CMS confere com o conteúdo coberto?
+    covers_whole_file: bool  # cobre o arquivo inteiro (é a última revisão)?
+    covers_revision: bool  # cobre a revisão inteira em que foi feita?
+    revision_end: int | None  # onde termina a revisão assinada: pdf[:revision_end]
+    signer_public_key_der: bytes | None
+
+
+@dataclass(frozen=True)
 class VerificationResult:
     has_signature: bool  # há assinatura embutida (ISO 32000)?
     cms_valid: bool  # o CMS confere com o conteúdo coberto?
     covers_whole_file: bool  # a assinatura cobre o arquivo inteiro (sem alteração incremental)?
     signer_public_key_der: bytes | None  # chave pública do certificado do assinante
     signature_id: str | None  # id da assinatura lido do documento, se houver
+    signatures: tuple[EmbeddedSignature, ...] = ()  # todas, da mais antiga para a mais recente
 
 
 def _connect(path: str, timeout: float) -> socket.socket:
@@ -177,17 +190,40 @@ def finish_sign(prepared_pdf: bytes, cms: bytes) -> bytes:
         raise AppError(ErrorCode.INTERNAL) from None
 
 
+def _key(value: Any) -> bytes | None:
+    return base64.b64decode(value, validate=True) if value else None
+
+
+def _embedded(item: dict[str, Any], pdf_len: int) -> EmbeddedSignature:
+    end = item["revision_end"]
+    if end is not None and (isinstance(end, bool) or not isinstance(end, int) or not 0 < end <= pdf_len):
+        raise ValueError("revision_end fora do arquivo")
+    return EmbeddedSignature(
+        ours=item["ours"] is True,
+        cms_valid=item["cms_valid"] is True,
+        covers_whole_file=item["covers_whole_file"] is True,
+        covers_revision=item["covers_revision"] is True,
+        revision_end=end,
+        signer_public_key_der=_key(item["signer_public_key_der"]),
+    )
+
+
 def verify(pdf: bytes) -> VerificationResult:
-    """Worker: confere a assinatura embutida mais recente (REQ-50). Não regrava o PDF."""
+    """Worker: confere as assinaturas embutidas (REQ-50). Não regrava o PDF.
+
+    Os campos de cima são os da assinatura mais recente; `signatures` traz todas.
+    """
     result, _ = _call("verify", {}, pdf)
     try:
         key_b64 = result["signer_public_key_der"]
+        signatures = tuple(_embedded(item, len(pdf)) for item in result["signatures"])
         return VerificationResult(
             has_signature=result["has_signature"] is True,
             cms_valid=result["cms_valid"] is True,
             covers_whole_file=result["covers_whole_file"] is True,
             signer_public_key_der=base64.b64decode(key_b64, validate=True) if key_b64 else None,
             signature_id=None,  # o id vem do registro no banco (REQ-51)
+            signatures=signatures,
         )
     except (KeyError, TypeError, ValueError):
         logger.error("pdf-worker devolveu um verify fora do formato")

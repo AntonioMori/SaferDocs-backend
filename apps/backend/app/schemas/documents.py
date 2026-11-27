@@ -23,10 +23,23 @@ class VerificationStatus(StrEnum):
     NAO_ENCONTRADA = "NAO_ENCONTRADA"  # assinatura não encontrada
 
 
+class SignerOut(BaseModel):
+    """Uma pessoa que assinou o documento no SaferDocs."""
+
+    signer_name: str | None
+    signed_at: datetime
+    signature_id: uuid.UUID
+
+
 class VerificationOut(BaseModel):
-    """Resultado da verificação pública (REQ-52). Os detalhes só vêm quando o documento é íntegro."""
+    """Resultado da verificação pública (REQ-52). Os detalhes só vêm quando o documento é íntegro.
+
+    `signers` traz todas as assinaturas do SaferDocs, da primeira para a última; os campos
+    `signer_name`, `signed_at` e `signature_id` são os da última.
+    """
 
     status: VerificationStatus
     signer_name: str | None = None
     signed_at: datetime | None = None
     signature_id: uuid.UUID | None = None
+    signers: list[SignerOut] = []

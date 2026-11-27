@@ -5,6 +5,7 @@ O worker roda em memória (fixture `fake_pdf_worker`), com o código real de
 como um leitor de PDF faria.
 """
 
+import hashlib
 import io
 import uuid
 
@@ -352,13 +353,54 @@ def test_pdf_ja_assinado_no_saferdocs_e_recusado_sem_registrar(client, conta, fa
         assert [f.details for f in falhas] == [{"error": "DOC_006"}]
 
 
-def test_pdf_ja_assinado_por_outra_pessoa_no_saferdocs_tambem_e_recusado(client, conta, fake_pdf_worker):
+def outra_conta(client, nome="Bruno Lima"):
+    email = f"assina-{uuid.uuid4().hex[:10]}@teste.dev"
+    resposta = client.post("/api/v1/auth/register", json={"name": nome, "email": email, "password": SENHA})
+    assert resposta.status_code == 201
+    with get_sessionmaker()() as db:
+        user = db.scalar(select(User).where(User.email == email))
+        db.expunge(user)
+    return {"user": user, "headers": {"Authorization": f"Bearer {session_token(user.id)}"}}
+
+
+def test_outra_pessoa_assina_por_cima_e_as_duas_assinaturas_valem(client, conta, fake_pdf_worker):
+    from app.db.models import Signature
+
+    bruno = outra_conta(client)
+    da_ana = assinar(client, conta, make_pdf())
+    assert da_ana.status_code == 200
+    resposta = assinar(client, bruno, da_ana.content, x="300")
+    assert resposta.status_code == 200
+    dos_dois = resposta.content
+    assert dos_dois.startswith(da_ana.content)  # revisão incremental: o da Ana fica intacto
+
+    assinaturas = PdfFileReader(io.BytesIO(dos_dois), strict=False).embedded_signatures
+    assert len(assinaturas) == 2
+    for sig in assinaturas:
+        contexto = ValidationContext(trust_roots=[sig.signer_cert], allow_fetching=False)
+        status = validate_pdf_signature(sig, signer_validation_context=contexto)
+        assert status.intact and status.valid
+    with get_sessionmaker()() as db:
+        do_bruno = db.scalar(select(Signature).where(Signature.user_id == bruno["user"].id))
+        # O registro do Bruno parte exatamente do arquivo que a Ana recebeu.
+        assert do_bruno.original_sha256 == hashlib.sha256(da_ana.content).hexdigest()
+
+
+def test_mesma_pessoa_nao_assina_de_novo_nem_depois_de_outra_assinar_por_cima(client, conta, fake_pdf_worker):
+    bruno = outra_conta(client)
+    da_ana = assinar(client, conta, make_pdf()).content
+    dos_dois = assinar(client, bruno, da_ana, x="300").content
+    for pessoa in (conta, bruno):
+        resposta = assinar(client, pessoa, dos_dois, x="150", y="300")
+        assert resposta.status_code == 409
+        assert resposta.json()["code"] == "DOC_006"
+
+
+def test_pdf_assinado_por_outra_pessoa_com_a_chave_dela_pode_ser_assinado(client, conta, fake_pdf_worker):
     from tests.test_pdf_verify import assinar as assinar_no_worker
 
     assinado_por_outro, _ = assinar_no_worker(make_pdf())
-    resposta = assinar(client, conta, assinado_por_outro)
-    assert resposta.status_code == 409
-    assert resposta.json()["code"] == "DOC_006"
+    assert assinar(client, conta, assinado_por_outro).status_code == 200
 
 
 def test_selo_tem_fundo_branco_opaco_e_borda_para_ser_legivel_em_pagina_escura(

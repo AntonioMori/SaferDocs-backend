@@ -255,7 +255,7 @@ def test_worker_que_devolve_o_byterange_antigo_com_digest_refeito_e_recusado(fak
     devolvido = assinado + b"\n"
     # O worker comprometido também ignora a recusa de PDF já assinado (DOC_006): o que está em
     # teste é a conferência que a API faz do /ByteRange devolvido.
-    monkeypatch.setattr("pdf_worker.sign._already_signed_by_us", lambda pdf: False)
+    monkeypatch.setattr("pdf_worker.sign._already_signed_by", lambda pdf, cert: False)
     _worker_que_devolve(monkeypatch, lambda r, c: ({"digest": _digest_coerente(devolvido)}, devolvido))
     with pytest.raises(AppError) as erro:
         _preparado(assinado)

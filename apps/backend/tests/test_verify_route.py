@@ -60,7 +60,13 @@ def test_documento_adulterado_por_um_byte(client, assinado):
     alterado = bytearray(pdf)
     alterado[alterado.index(b"/MediaBox") + 12] ^= 0x01
     corpo = verificar(client, bytes(alterado)).json()
-    assert corpo == {"status": "ADULTERADO", "signer_name": None, "signed_at": None, "signature_id": None}
+    assert corpo == {
+        "status": "ADULTERADO",
+        "signer_name": None,
+        "signed_at": None,
+        "signature_id": None,
+        "signers": [],
+    }
 
 
 def test_assinatura_nao_encontrada(client, fake_pdf_worker):
@@ -101,6 +107,97 @@ def test_documento_assinado_e_depois_reassinado_por_outro_e_adulterado(client, a
     pdf, _ = assinado
     reassinado, _ = assinar(pdf, por_fora=True)
     assert verificar(client, reassinado).json()["status"] == "ADULTERADO"
+
+
+# ------------------------------------------------------- várias pessoas no mesmo arquivo
+
+
+def _registrar(client, nome):
+    email = f"verifica-{uuid.uuid4().hex[:10]}@teste.dev"
+    user_id = client.post(
+        "/api/v1/auth/register", json={"name": nome, "email": email, "password": SENHA}
+    ).json()["id"]
+    return {"Authorization": f"Bearer {session_token(uuid.UUID(user_id))}"}
+
+
+def _assinar_api(client, headers, pdf, x="10"):
+    resposta = client.post(
+        "/api/v1/documents/sign",
+        files={"file": ("d.pdf", pdf, "application/pdf")},
+        data={"page": "1", "x": x, "y": "10"},
+        headers=headers,
+    )
+    assert resposta.status_code == 200
+    return resposta.content, resposta.headers["x-signature-id"]
+
+
+def _girar_pagina(pdf: bytes) -> bytes:
+    from pyhanko.pdf_utils.generic import NameObject, NumberObject
+    from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+
+    escritor = IncrementalPdfFileWriter(io.BytesIO(pdf))
+    pagina = escritor.root["/Pages"]["/Kids"][0].get_object()
+    pagina[NameObject("/Rotate")] = NumberObject(90)
+    escritor.update_container(pagina)
+    saida = io.BytesIO()
+    escritor.write(saida)
+    return saida.getvalue()
+
+
+def test_dois_assinantes_e_integro_e_lista_os_dois_em_ordem(client, assinado):
+    pdf, id_carla = assinado
+    dos_dois, id_davi = _assinar_api(client, _registrar(client, "Davi Rocha"), pdf, x="300")
+    corpo = verificar(client, dos_dois).json()
+    assert corpo["status"] == "INTEGRO"
+    assert [s["signer_name"] for s in corpo["signers"]] == ["Carla Dias", "Davi Rocha"]
+    assert [s["signature_id"] for s in corpo["signers"]] == [id_carla, id_davi]
+    # Os campos de cima são os da última assinatura.
+    assert corpo["signer_name"] == "Davi Rocha" and corpo["signature_id"] == id_davi
+    # O arquivo de antes continua íntegro, só com a Carla.
+    assert [s["signer_name"] for s in verificar(client, pdf).json()["signers"]] == ["Carla Dias"]
+
+
+def test_tres_assinantes_em_cadeia(client, assinado):
+    pdf, _ = assinado
+    pdf, _ = _assinar_api(client, _registrar(client, "Davi Rocha"), pdf, x="300")
+    pdf, _ = _assinar_api(client, _registrar(client, "Elisa Melo"), pdf, x="150")
+    corpo = verificar(client, pdf).json()
+    assert corpo["status"] == "INTEGRO"
+    assert [s["signer_name"] for s in corpo["signers"]] == ["Carla Dias", "Davi Rocha", "Elisa Melo"]
+
+
+def test_alteracao_entre_duas_assinaturas_e_adulterado(client, assinado):
+    # A página é girada depois da Carla assinar, e o Davi assina por cima do arquivo alterado.
+    # A assinatura do Davi é válida e cobre o arquivo, mas a cadeia não fecha com a da Carla.
+    pdf, _ = assinado
+    alterado = _girar_pagina(pdf)
+    dos_dois, _ = _assinar_api(client, _registrar(client, "Davi Rocha"), alterado, x="300")
+    corpo = verificar(client, dos_dois).json()
+    assert corpo["status"] == "ADULTERADO"
+    assert corpo["signers"] == []
+
+
+def test_alteracao_depois_do_segundo_assinante_e_adulterado(client, assinado):
+    pdf, _ = assinado
+    dos_dois, _ = _assinar_api(client, _registrar(client, "Davi Rocha"), pdf, x="300")
+    assert verificar(client, _girar_pagina(dos_dois)).json()["status"] == "ADULTERADO"
+
+
+def test_um_byte_alterado_na_parte_do_primeiro_assinante_e_adulterado(client, assinado):
+    pdf, _ = assinado
+    dos_dois, _ = _assinar_api(client, _registrar(client, "Davi Rocha"), pdf, x="300")
+    alterado = bytearray(dos_dois)
+    alterado[alterado.index(b"/MediaBox") + 12] ^= 0x01
+    assert verificar(client, bytes(alterado)).json()["status"] == "ADULTERADO"
+
+
+def test_segunda_assinatura_de_fora_por_cima_e_adulterado(client, assinado, fake_pdf_worker):
+    # Assinatura válida, mas de alguém sem registro no SaferDocs, depois da Carla.
+    from tests.test_pdf_verify import assinar
+
+    pdf, _ = assinado
+    por_cima, _ = assinar(pdf)
+    assert verificar(client, por_cima).json()["status"] == "ADULTERADO"
 
 
 # ------------------------------------- PDF assinado e depois regravado (comprimido, otimizado)
