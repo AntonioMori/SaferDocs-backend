@@ -41,6 +41,9 @@ services:
     volumes:
       - ./apps/backend/app:/app/app # hot-reload em desenvolvimento
       - pdfsock:/run/pdf:ro # a API só conecta no socket; não grava nada ali
+      # Migrations montadas do disco: sem isso a imagem fica com as versões
+      # da época do build e o `alembic upgrade head` quebra com revisão ausente.
+      - ./apps/backend/alembic:/app/alembic
 
   # ---------------------------------------------------------------------------
   # Processamento isolado de PDF (REQ-62): todo parsing acontece aqui.
