@@ -137,6 +137,7 @@ Uso dos status HTTP: **400** erro do cliente, **401** não autenticado, **403** 
 | `DOC_003` | 400 | PDFs com JavaScript embutido não são aceitos. |
 | `DOC_004` | 400 | Não foi possível processar o PDF. |
 | `DOC_005` | 400 | Página ou posição do selo inválida. |
+| `DOC_006` | 409 | Este PDF já foi assinado no SaferDocs. |
 | `VAL_001` | 400 | Dados inválidos. |
 | `RES_001` | 404 | Recurso não encontrado. |
 | `RES_002` | 405 | Método não permitido para este recurso. |

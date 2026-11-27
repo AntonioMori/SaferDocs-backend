@@ -179,7 +179,7 @@ def test_pdf_sem_cara_de_assinado_que_nao_abre_continua_doc_004(fake_pdf_worker)
 def test_verificacao_usa_a_assinatura_mais_recente(fake_pdf_worker):
     # Assinado duas vezes: a primeira não cobre mais o arquivo; a segunda sim.
     uma_vez, _ = assinar(make_pdf())
-    duas_vezes, segundo = assinar(uma_vez, make_signer("Segundo"))
+    duas_vezes, segundo = assinar(uma_vez, make_signer("Segundo"), por_fora=True)
     resultado = pdf_client.verify(duas_vezes)
     assert resultado.cms_valid and resultado.covers_whole_file
     assert resultado.signer_public_key_der == segundo.signing_public_key
@@ -206,9 +206,9 @@ def test_porcentagem_no_selo_sai_literal(fake_pdf_worker):
         make_pdf(), page=1, x=10, y=10, seal_lines=["100% %(signer)s %s"], signer_cert_pem=cert
     )
     assert len(preparado.digest) == 32
-    from pdf_worker.sign import _seal_text
+    from pdf_worker.seal import clean_lines
 
-    assert _seal_text(["100% %(signer)s"]) == "100%% %%(signer)s"
+    assert clean_lines(["100% %(signer)s"]) == ["100% %(signer)s"]  # o texto não passa pelo "%"
 
 
 def test_banco_nao_loga_parametros_das_consultas():
@@ -253,6 +253,9 @@ def test_worker_que_devolve_o_byterange_antigo_com_digest_refeito_e_recusado(fak
     # O original já é assinado: o /ByteRange dele está na parte do original, não na acrescentada.
     assinado, _ = assinar(make_pdf())
     devolvido = assinado + b"\n"
+    # O worker comprometido também ignora a recusa de PDF já assinado (DOC_006): o que está em
+    # teste é a conferência que a API faz do /ByteRange devolvido.
+    monkeypatch.setattr("pdf_worker.sign._already_signed_by_us", lambda pdf: False)
     _worker_que_devolve(monkeypatch, lambda r, c: ({"digest": _digest_coerente(devolvido)}, devolvido))
     with pytest.raises(AppError) as erro:
         _preparado(assinado)

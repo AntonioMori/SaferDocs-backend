@@ -227,15 +227,11 @@ def _texto_do_selo(pdf: bytes) -> str:
 
     doc = pikepdf.open(io.BytesIO(pdf))
     campo = next(f for f in doc.Root.AcroForm.Fields if f.get("/FT") == "/Sig")
-    stream = campo.AP.N
-    pedacos = [stream.read_bytes()]
-    for xobj in (stream.get("/Resources", {}).get("/XObject", {}) or {}).values():
-        pedacos.append(xobj.read_bytes())
     import re
 
-    texto = b"".join(pedacos).decode("latin-1")
-    # Strings do PDF: o pyHanko escreve pontuação como escape octal ("\\072" é ":").
-    return re.sub(r"\\(\d{3})", lambda m: chr(int(m.group(1), 8)), texto)
+    # Strings do PDF em WinAnsi (cp1252): o que não é ASCII vai em escape octal ("\\205" é "…").
+    bruto = re.sub(rb"\\(\d{3})", lambda m: bytes([int(m.group(1), 8)]), _conteudo_da_aparencia(campo.AP.N))
+    return bruto.decode("cp1252", errors="replace")
 
 
 def test_selo_mostra_nome_data_utc_hash_e_id(client, conta, fake_pdf_worker):
@@ -245,10 +241,13 @@ def test_selo_mostra_nome_data_utc_hash_e_id(client, conta, fake_pdf_worker):
     resposta = assinar(client, conta, original)
     texto = _texto_do_selo(resposta.content)
     sha = hashlib.sha256(original).hexdigest()
-    assert "Assinado por: Ana Souza" in texto
-    assert " UTC" in texto and "Em: 20" in texto
-    assert sha[:32] in texto and sha[32:] in texto  # hash completo, em duas linhas
-    assert f"ID: {resposta.headers['x-signature-id']}" in texto
+    assert "(Ana Souza)" in texto
+    assert "ASSINADO DIGITALMENTE" in texto
+    assert " UTC" in texto
+    # Hash abreviado no selo (REQ-47): começo e fim; o completo fica no registro da assinatura.
+    assert f"SHA-256 {sha[:8]}…{sha[-8:]}" in texto
+    assert sha not in texto
+    assert f"ID {resposta.headers['x-signature-id']}" in texto
 
 
 def test_data_do_selo_esta_em_utc(client, conta, fake_pdf_worker):
@@ -258,10 +257,10 @@ def test_data_do_selo_esta_em_utc(client, conta, fake_pdf_worker):
     antes = dt.datetime.now(dt.UTC).replace(microsecond=0)
     texto = _texto_do_selo(assinar(client, conta, make_pdf()).content)
     depois = dt.datetime.now(dt.UTC)
-    carimbo = re.search(r"Em: (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) UTC", texto)
+    carimbo = re.search(r"(\d\d/\d\d/\d{4}) · (\d\d:\d\d:\d\d) UTC", texto)
     assert carimbo
-    valor = carimbo.group(1)
-    momento = dt.datetime.strptime(valor, "%Y-%m-%d %H:%M:%S").replace(tzinfo=dt.UTC)
+    valor = " ".join(carimbo.groups())
+    momento = dt.datetime.strptime(valor, "%d/%m/%Y %H:%M:%S").replace(tzinfo=dt.UTC)
     assert antes <= momento <= depois
 
 
@@ -275,7 +274,7 @@ def test_nome_longo_ou_com_quebra_de_linha_nao_estoura_o_selo():
     linhas = seal_lines(user, uuid.uuid4(), dt.datetime.now(dt.UTC), "a" * 64)
     assert all("\n" not in linha for linha in linhas)
     assert all(len(linha) <= 48 for linha in linhas)
-    assert linhas[0].startswith("Assinado por: Maria da Silva") and linhas[0].endswith("...")
+    assert linhas[0].startswith("Maria da Silva") and linhas[0].endswith("...")
 
 
 # --------------------------------------------------------------- registro (REQ-48)
@@ -331,6 +330,56 @@ def test_falha_na_assinatura_nao_registra_e_vai_para_a_auditoria(client, conta, 
             select(AuditLog).where(AuditLog.user_id == conta["user"].id, AuditLog.action == "DOCUMENT_SIGNED")
         ).all()
         assert [(f.result, f.details) for f in falhas] == [("FAILURE", {"error": "DOC_004"})]
+
+
+def test_pdf_ja_assinado_no_saferdocs_e_recusado_sem_registrar(client, conta, fake_pdf_worker):
+    from app.db.models import AuditLog, Signature
+
+    assinado = assinar(client, conta, make_pdf()).content
+    resposta = assinar(client, conta, assinado)
+    assert resposta.status_code == 409
+    assert resposta.json()["code"] == "DOC_006"
+    with get_sessionmaker()() as db:
+        # Só a primeira assinatura ficou registrada; a recusa foi para a auditoria.
+        assert len(db.scalars(select(Signature).where(Signature.user_id == conta["user"].id)).all()) == 1
+        falhas = db.scalars(
+            select(AuditLog).where(
+                AuditLog.user_id == conta["user"].id,
+                AuditLog.action == "DOCUMENT_SIGNED",
+                AuditLog.result == "FAILURE",
+            )
+        ).all()
+        assert [f.details for f in falhas] == [{"error": "DOC_006"}]
+
+
+def test_pdf_ja_assinado_por_outra_pessoa_no_saferdocs_tambem_e_recusado(client, conta, fake_pdf_worker):
+    from tests.test_pdf_verify import assinar as assinar_no_worker
+
+    assinado_por_outro, _ = assinar_no_worker(make_pdf())
+    resposta = assinar(client, conta, assinado_por_outro)
+    assert resposta.status_code == 409
+    assert resposta.json()["code"] == "DOC_006"
+
+
+def test_selo_tem_fundo_branco_opaco_e_borda_para_ser_legivel_em_pagina_escura(
+    client, conta, fake_pdf_worker
+):
+    import pikepdf
+
+    assinado = assinar(client, conta, make_pdf()).content
+    doc = pikepdf.open(io.BytesIO(assinado))
+    widget = next(f for f in doc.Root.AcroForm.Fields if f.get("/FT") == "/Sig")
+    conteudo = _conteudo_da_aparencia(widget.AP.N)
+    assert b"1.000 1.000 1.000 rg" in conteudo  # cartão branco atrás do texto
+    assert b"0.027 0.553 0.933 rg" in conteudo  # faixa azul da marca
+
+
+def _conteudo_da_aparencia(xobject) -> bytes:
+    """Conteúdo do XObject da aparência e dos XObjects que ele desenha (o fundo fica num deles)."""
+    partes = [xobject.read_bytes()]
+    for filho in (xobject.get("/Resources", {}).get("/XObject", {}) or {}).values():
+        partes.append(_conteudo_da_aparencia(filho))
+    return b"\n".join(partes)
 
 
 def test_historico_mostra_so_as_minhas_assinaturas_sem_o_pdf(client, conta, fake_pdf_worker):

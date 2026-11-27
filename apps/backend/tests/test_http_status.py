@@ -18,6 +18,7 @@ ESPERADO = {
     403: {"AUTH_009", "AUTH_010"},  # autenticado/identificado, mas sem permissão
     404: {"RES_001"},
     405: {"RES_002"},
+    409: {"DOC_006"},  # conflito com o estado do recurso (PDF já assinado)
     413: {"DOC_002"},
     429: {"RATE_001"},
     500: {"SYS_001"},
