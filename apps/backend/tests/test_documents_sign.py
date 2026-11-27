@@ -50,9 +50,9 @@ def assinar(client, conta, pdf, page="1", x="50", y="50"):
     )
 
 
-def validar(pdf: bytes):
+def validar(pdf: bytes, *, strict: bool = True):
     """Valida a última assinatura embutida como um leitor de PDF (confiando no certificado embutido)."""
-    sig = PdfFileReader(io.BytesIO(pdf)).embedded_signatures[-1]
+    sig = PdfFileReader(io.BytesIO(pdf), strict=strict).embedded_signatures[-1]
     contexto = ValidationContext(trust_roots=[sig.signer_cert], allow_fetching=False)
     return sig, validate_pdf_signature(sig, signer_validation_context=contexto)
 
@@ -396,3 +396,41 @@ def test_posicao_e_relativa_ao_canto_da_pagina_mesmo_com_mediabox_deslocado(clie
     doc = pikepdf.open(io.BytesIO(assinado))
     widget = next(f for f in doc.Root.AcroForm.Fields if f.get("/FT") == "/Sig")
     assert [float(v) for v in widget.Rect] == [100, 200, 340, 280]
+
+
+# ------------------------------------------- PDF de outros sistemas com xref fora do padrão
+
+
+def _pdf_com_xref_stream_fora_do_padrao() -> bytes:
+    """Como o PDF da Docusign: xref em stream, com a entrada 0 na geração 0xFFFFFFFF."""
+    import struct
+
+    objetos = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] >>",
+    ]
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for numero, corpo in enumerate(objetos, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % numero + corpo + b"\nendobj\n"
+    inicio_xref = len(out)
+    linhas = struct.pack(">BII", 0, 0, 0xFFFFFFFF)  # a geração fora do padrão
+    linhas += b"".join(struct.pack(">BII", 1, offset, 0) for offset in offsets)
+    linhas += struct.pack(">BII", 1, inicio_xref, 0)
+    cabecalho = b"4 0 obj\n<< /Type /XRef /Size 5 /W [1 4 4] /Root 1 0 R /Length %d >>\nstream\n"
+    out += cabecalho % len(linhas)
+    out += linhas + b"\nendstream\nendobj\nstartxref\n%d\n%%%%EOF\n" % inicio_xref
+    return bytes(out)
+
+
+def test_pdf_com_xref_fora_do_padrao_e_assinado_sem_mexer_no_original(client, conta, fake_pdf_worker):
+    original = _pdf_com_xref_stream_fora_do_padrao()
+    resposta = assinar(client, conta, original)
+    assert resposta.status_code == 200, resposta.text
+    assert resposta.content.startswith(original)  # só acrescenta, o original fica intacto
+    # O leitor tolerante, como o do Acrobat e o da verificação do SaferDocs (o estrito recusa o original).
+    _, status = validar(resposta.content, strict=False)
+    assert status.intact and status.valid
+    assert status.coverage.name == "ENTIRE_FILE"

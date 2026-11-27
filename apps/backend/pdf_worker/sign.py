@@ -85,12 +85,14 @@ def _certificate(value: Any) -> x509.Certificate:
 def _incremental_writer(pdf: bytes) -> IncrementalPdfFileWriter:
     """Writer incremental do pyHanko: a assinatura é ACRESCENTADA, o original fica intacto.
 
-    PDF que o leitor estrito do pyHanko recusa (xref ausente ou quebrada) não é
-    regravado: regravar mudaria os bytes do original, e a API exige que o PDF
-    assinado comece com o arquivo exato que o usuário mandou.
+    O leitor é tolerante (`strict=False`): PDF de outros sistemas (a Docusign, por
+    exemplo) costuma ter defeitos pequenos na xref, como a geração da entrada 0 fora
+    do padrão, que todo leitor de PDF aceita. O writer só ACRESCENTA, nunca regrava o
+    original, e a API ainda confere que o PDF assinado começa com o arquivo exato que
+    o usuário mandou. O que nem assim abre continua sendo não processável.
     """
     try:
-        return IncrementalPdfFileWriter(io.BytesIO(pdf))
+        return IncrementalPdfFileWriter(io.BytesIO(pdf), strict=False)
     except Exception:  # noqa: BLE001 - qualquer recusa do leitor estrito: não processável
         raise OpError(ERR_UNPROCESSABLE) from None
 
