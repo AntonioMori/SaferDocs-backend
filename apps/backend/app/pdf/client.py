@@ -18,6 +18,7 @@ worker viram AppError:
   ErrorCode.DOC_UNPROCESSABLE (400);
 - JavaScript embutido: ErrorCode.DOC_HAS_JAVASCRIPT (400, REQ-63);
 - posição do selo fora da página: ErrorCode.DOC_INVALID_POSITION (400);
+- PDF que já tem assinatura do SaferDocs: ErrorCode.DOC_ALREADY_SIGNED (409);
 - worker ocupado (todas as vagas em uso além do prazo da fila):
   ErrorCode.RATE_LIMITED (429) com `Retry-After`;
 - worker fora do ar ou resposta inválida: ErrorCode.INTERNAL (500).
@@ -53,6 +54,7 @@ _WORKER_ERRORS = {
     protocol.ERR_TIMEOUT: ErrorCode.DOC_UNPROCESSABLE,
     protocol.ERR_HAS_JAVASCRIPT: ErrorCode.DOC_HAS_JAVASCRIPT,
     protocol.ERR_INVALID_POSITION: ErrorCode.DOC_INVALID_POSITION,
+    protocol.ERR_ALREADY_SIGNED: ErrorCode.DOC_ALREADY_SIGNED,
 }
 
 

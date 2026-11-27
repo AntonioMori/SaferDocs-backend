@@ -1,6 +1,6 @@
 """Assinatura do PDF no worker (REQ-46), em duas operações, sem a chave privada.
 
-    prepare_sign: PDF + página/posição + texto do selo + certificado do assinante
+    prepare_sign: PDF + página/posição + linhas do selo + certificado do assinante
                   -> PDF com o campo de assinatura, o selo desenhado e o /Contents
                      reservado, e o SHA-256 dos bytes cobertos pelo /ByteRange.
     (a API confere o preparado, recalcula o digest, monta o CMS com a chave do
@@ -26,17 +26,16 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import fields, signers
 from pyhanko.sign.validation import validate_pdf_signature
 from pyhanko.sign.validation.status import SignatureCoverageLevel
-from pyhanko.stamp import TextStampStyle
 from pyhanko_certvalidator import ValidationContext
 
+from pdf_worker import seal
 from pdf_worker.ops import OpError, page_sizes
 from pdf_worker.protocol import (
+    ERR_ALREADY_SIGNED,
     ERR_BAD_REQUEST,
     ERR_HAS_JAVASCRIPT,
     ERR_INVALID_POSITION,
     ERR_UNPROCESSABLE,
-    MAX_SEAL_LINE_LENGTH,
-    MAX_SEAL_LINES,
     SEAL_HEIGHT,
     SEAL_WIDTH,
 )
@@ -45,19 +44,22 @@ from pdf_worker.protocol import (
 CONTENTS_RESERVED_BYTES = 8192
 FIELD_PREFIX = "SaferDocs"
 
+# Nome do campo que o SaferDocs cria: "SaferDocs-" + 32 hexadecimais (uuid4().hex).
+_OUR_FIELD = re.compile(rf"{FIELD_PREFIX}-[0-9a-f]{{32}}")
 
-def _seal_text(lines: Any) -> str:
-    if not isinstance(lines, list) or not 1 <= len(lines) <= MAX_SEAL_LINES:
-        raise OpError(ERR_BAD_REQUEST)
-    clean = []
-    for line in lines:
-        if not isinstance(line, str) or len(line) > MAX_SEAL_LINE_LENGTH:
-            raise OpError(ERR_BAD_REQUEST)
-        # A fonte padrão do selo é WinAnsi: o que não cabe vira "?". O pyHanko formata o
-        # texto com "%" (%(signer)s...), então "%" do usuário precisa ser escapado.
-        text = "".join(c if c.isprintable() else " " for c in line)
-        clean.append(text.encode("cp1252", errors="replace").decode("cp1252").replace("%", "%%"))
-    return "\n".join(clean)
+
+def _already_signed_by_us(pdf: bytes) -> bool:
+    """O PDF já tem uma assinatura do SaferDocs (campo com o nosso prefixo).
+
+    Assinar de novo o arquivo que o SaferDocs devolveu criaria uma segunda assinatura sobre a
+    primeira: o documento é o mesmo, então a segunda é recusada. Assinaturas de outros sistemas
+    não impedem: o SaferDocs pode assinar um PDF que já veio assinado de fora.
+    """
+    try:
+        signatures = PdfFileReader(io.BytesIO(pdf), strict=False).embedded_signatures
+    except Exception:  # noqa: BLE001 - se nem abre, a assinatura vai recusar como não processável
+        return False
+    return any(_OUR_FIELD.fullmatch(sig.field_name or "") for sig in signatures)
 
 
 def _number(value: Any) -> float:
@@ -102,7 +104,7 @@ def prepare_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], byte
     if isinstance(page, bool) or not isinstance(page, int):
         raise OpError(ERR_BAD_REQUEST)
     x, y = _number(args.get("x")), _number(args.get("y"))
-    stamp_text = _seal_text(args.get("seal_lines"))
+    seal_lines = seal.clean_lines(args.get("seal_lines"))
     cert = _certificate(args.get("signer_cert_pem"))
 
     # Mesmas checagens de todo PDF (JavaScript, objetos perdidos, MediaBox) e a posição.
@@ -112,12 +114,14 @@ def prepare_sign(pdf: bytes, args: dict[str, Any]) -> tuple[dict[str, Any], byte
     size = pages[page - 1]
     if not (0 <= x and 0 <= y and x + SEAL_WIDTH <= size["width"] and y + SEAL_HEIGHT <= size["height"]):
         raise OpError(ERR_INVALID_POSITION)
+    if _already_signed_by_us(pdf):
+        raise OpError(ERR_ALREADY_SIGNED)
 
     async def digest() -> tuple[Any, bytes]:
         signer = signers.ExternalSigner(signing_cert=cert, cert_registry=None, signature_value=bytes(72))
         field_name = f"{FIELD_PREFIX}-{uuid.uuid4().hex}"  # único: o PDF pode ter outras assinaturas
         meta = signers.PdfSignatureMetadata(field_name=field_name, md_algorithm="sha256")
-        style = TextStampStyle(stamp_text=stamp_text)
+        style = seal.stamp_style(seal_lines)
         # (x, y) é relativo ao canto inferior esquerdo da página, mesmo que o MediaBox não comece em 0.
         left, bottom = x + size["left"], y + size["bottom"]
         box = (left, bottom, left + SEAL_WIDTH, bottom + SEAL_HEIGHT)

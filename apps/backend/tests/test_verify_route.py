@@ -99,7 +99,7 @@ def test_documento_assinado_e_depois_reassinado_por_outro_e_adulterado(client, a
     from tests.test_pdf_verify import assinar
 
     pdf, _ = assinado
-    reassinado, _ = assinar(pdf)
+    reassinado, _ = assinar(pdf, por_fora=True)
     assert verificar(client, reassinado).json()["status"] == "ADULTERADO"
 
 

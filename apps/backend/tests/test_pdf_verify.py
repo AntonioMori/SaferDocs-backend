@@ -2,6 +2,7 @@
 
 import datetime as dt
 import io
+from unittest import mock
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -13,11 +14,15 @@ from app.services.user_keys import sign_with_user_key
 from tests.conftest import make_pdf, make_signer
 
 
-def assinar(pdf: bytes, assinante=None):
+def assinar(pdf: bytes, assinante=None, *, por_fora: bool = False):
+    """Assina com o worker. `por_fora` simula outra ferramenta, que não recusa um PDF que o
+    SaferDocs já assinou (o SaferDocs recusa: DOC_006)."""
     user, cert_pem = assinante or make_signer()
-    preparado = pdf_client.prepare_sign(
-        pdf, page=1, x=10, y=10, seal_lines=["Teste"], signer_cert_pem=cert_pem
-    )
+    trava = mock.patch("pdf_worker.sign._already_signed_by_us", return_value=False) if por_fora else None
+    with trava or mock.MagicMock():
+        preparado = pdf_client.prepare_sign(
+            pdf, page=1, x=10, y=10, seal_lines=["Teste"], signer_cert_pem=cert_pem
+        )
     cms = build_signed_data(
         document_digest=preparado.digest,
         signer_cert_der=user.signing_cert,

@@ -32,7 +32,7 @@ from app.services.user_keys import generate_user_keys, sign_with_user_key
 
 MAX_PAGE = 100_000
 MAX_COORDINATE = 14_400  # maior página que o PDF permite
-MAX_SEAL_NAME = 34  # "Assinado por: " + nome cabe numa linha do selo
+MAX_SEAL_NAME = 40  # o worker ainda reduz a letra até o nome caber na largura do selo
 
 
 @dataclass(frozen=True)
@@ -80,20 +80,20 @@ def parse_position(fields: dict[str, str]) -> SealPosition:
 def seal_lines(
     user: User, signature_id: uuid.UUID, signed_at: dt.datetime, original_sha256: str
 ) -> list[str]:
-    """Texto do selo visual (REQ-47): quem, quando (UTC), hash do original e id da assinatura.
+    """Linhas do selo visual (REQ-47): quem, quando (UTC), hash do original e id da assinatura.
 
-    O selo tem 240 pt de largura: cada linha cabe em ~45 caracteres. O SHA-256
-    vai inteiro, em duas linhas, para poder ser conferido sem outra ferramenta.
+    O worker desenha a 1ª linha em destaque, a 2ª como apoio e as outras em letra pequena. O hash
+    vai abreviado no selo (começo e fim, o bastante para conferir de olho); o completo fica no
+    registro da assinatura e aparece na verificação.
     """
     name = " ".join((user.name or "").split())  # sem quebras de linha nem espaços repetidos
     if len(name) > MAX_SEAL_NAME:
         name = name[: MAX_SEAL_NAME - 3] + "..."
     return [
-        f"Assinado por: {name}",
-        f"Em: {signed_at.astimezone(dt.UTC):%Y-%m-%d %H:%M:%S} UTC",
-        f"SHA-256: {original_sha256[:32]}",
-        f"         {original_sha256[32:]}",
-        f"ID: {signature_id}",
+        name,
+        f"{signed_at.astimezone(dt.UTC):%d/%m/%Y · %H:%M:%S} UTC",
+        f"SHA-256 {original_sha256[:8]}…{original_sha256[-8:]}",
+        f"ID {signature_id}",
     ]
 
 
