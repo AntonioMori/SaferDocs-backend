@@ -3,6 +3,7 @@
 import io
 import uuid
 
+import pikepdf
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -100,6 +101,50 @@ def test_documento_assinado_e_depois_reassinado_por_outro_e_adulterado(client, a
     pdf, _ = assinado
     reassinado, _ = assinar(pdf)
     assert verificar(client, reassinado).json()["status"] == "ADULTERADO"
+
+
+# ------------------------------------- PDF assinado e depois regravado (comprimido, otimizado)
+
+
+def _regravar(pdf: bytes, **opcoes) -> bytes:
+    """Regrava o arquivo inteiro, como fazem os compressores e "otimizadores" de PDF."""
+    saida = io.BytesIO()
+    with pikepdf.open(io.BytesIO(pdf)) as documento:
+        documento.save(saida, **opcoes)
+    return saida.getvalue()
+
+
+@pytest.mark.parametrize(
+    "opcoes",
+    [
+        {},
+        {"compress_streams": True, "object_stream_mode": pikepdf.ObjectStreamMode.generate},
+        {"linearize": True},
+    ],
+    ids=["regravado", "comprimido", "otimizado-para-web"],
+)
+def test_assinado_e_regravado_mantendo_a_assinatura_e_adulterado(client, assinado, opcoes):
+    # A assinatura continua no arquivo, mas os bytes que ela cobria mudaram de lugar.
+    pdf, _ = assinado
+    regravado = _regravar(pdf, **opcoes)
+    assert regravado != pdf
+    assert verificar(client, regravado).json()["status"] == "ADULTERADO"
+
+
+def test_assinado_e_comprimido_sem_a_assinatura_e_nao_encontrada(client, assinado):
+    # Compressor que apaga o formulário e o selo (como o do arquivo testado à mão): o que
+    # sobra não tem rastro de assinatura nem do selo, então não há o que conferir.
+    pdf, _ = assinado
+    saida = io.BytesIO()
+    with pikepdf.open(io.BytesIO(pdf)) as documento:
+        del documento.Root["/AcroForm"]
+        for pagina in documento.pages:
+            if "/Annots" in pagina:
+                del pagina["/Annots"]
+        documento.save(saida, compress_streams=True)
+    sem_assinatura = saida.getvalue()
+    assert b"/ByteRange" not in sem_assinatura
+    assert verificar(client, sem_assinatura).json()["status"] == "NAO_ENCONTRADA"
 
 
 # --------------------------------------------------------------- entrada e auditoria
